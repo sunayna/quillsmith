@@ -56,11 +56,28 @@ to pure API calls:
    an accordion-style UI quirk: the tree view only keeps one branch's
    descendants rendered at a time, so drilling into one subject via real
    clicks was silently dropping sibling subjects' data before this fix.
-5. Standard names come straight from the API's raw JSON, which can contain
+5. Recursion stops at the real **Standard** level using
+   `reference/standards_2025_26.json` — a ground-truth list of actual
+   standard text per grade/subject, built from the school's own "ASSESSMENT
+   TREES" workbook (`reference/build_reference.py`). This exists because
+   there's no fully reliable structural signal in reportbee's own tree for
+   "this is the Standard" versus "this is a Topic heading, an assessment
+   instance (FA/SA), or a rubric criterion beneath the real standard" — a
+   short_name convention (`"S1"`, `"S2"`, ...) looked like that signal at
+   first but wasn't: on one Expedition standard, a topic heading *and* the
+   real standard beneath it both matched `S<n>`. Node names are matched
+   against the reference with exact-then-fuzzy (Levenshtein similarity)
+   comparison, since the xlsx and the live tree occasionally have small
+   genuine text drift between them (not just whitespace/formatting).
+   Subject names also don't always match between the two sources (`हिंदी`
+   vs `Hindi`, `Math` vs `Mathematics`, inconsistent SEL naming) —
+   `resolveSubjectKey()` bridges these. Falls back to the old short_name
+   heuristic only when no reference data covers a subject.
+6. Standard names come straight from the API's raw JSON, which can contain
    literal commas or embedded newlines (unlike the old scraper's truncated
    DOM text) — CSV fields are written with proper RFC4180 quoting to avoid
    silently corrupting rows.
-6. Writes one CSV per section to `data/<year>/<Grade>_<Section>.csv`, format
+7. Writes one CSV per section to `data/<year>/<Grade>_<Section>.csv`, format
    `Year,Class,Subject,Standard,S,P,M,E`.
 
 Each grade's actual section list (A–H, sometimes more) is **discovered live**
@@ -150,6 +167,9 @@ python3 src/deck/build_deck.py data/2025_26 "Grade 7"
 ```
 config/batch.json       — grade/section/year/term list for a batch run
 assets/deck_template/   — blank deck skeleton (unpacked .pptx), permanent asset
+reference/build_reference.py     — parses the school's "ASSESSMENT TREES"
+                                    xlsx into a ground-truth standards list
+reference/standards_2025_26.json — that list; grade -> subject -> [standard text]
 src/extract/extract.js  — API-based extractor; exports extractSection() + a CLI
 src/batch.js            — loops extractSection() over a grade's sections, then
                            calls build_deck.py
@@ -177,3 +197,8 @@ output/<year>/          — finished decks (git-ignored)
 - Only tested so far against Grades IV, V, VI, VII for the 2023-24 (verified
   correct data) and 2025-26 (year-switching verified, full batch pending
   re-verification after the year-switching fix) academic years.
+- `reference/standards_2025_26.json` is a **snapshot for one specific term's
+  workbook**. A new term/year needs a fresh xlsx from the school and a
+  re-run of `build_reference.py` against it — extraction still works without
+  it (falls back to the short_name heuristic, which is less reliable but not
+  broken), so this degrades gracefully rather than failing outright.
