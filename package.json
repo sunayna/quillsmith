@@ -1,0 +1,15 @@
+{
+  "name": "quillsmith",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Extracts marks data from reportbee via its own API and builds a Data Analysis slide deck, all in one command.",
+  "main": "src/batch.js",
+  "scripts": {
+    "extract": "node src/extract/extract.js",
+    "batch": "node src/batch.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "puppeteer": "^24.7.2"
+  }
+}
