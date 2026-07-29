@@ -117,6 +117,32 @@ async function expandNode(page, domLabel) {
  * or expand click needed. children_uuids reliably tells us whether a child
  * is a true leaf even before it's ever been expanded itself.
  */
+/**
+ * A node is the genuine "Standard" level — what the Standard column should
+ * actually capture — exactly when its short_name matches reportbee's own
+ * "S<n>" convention (e.g. "S1", "S2"), regardless of whether it structurally
+ * has further children. Confirmed live: a Standard can wrap an assessment
+ * instance ("SA"/"FA", short_name lowercase "sa1"/"fa1") which can itself
+ * wrap rubric criteria (short_name "R1", "R2", ...) — e.g. an Expedition
+ * standard "Analyzes maps by using latitude and longitude..." had 4 rubric
+ * criteria beneath its one SA instance. Recursing all the way to those
+ * criteria captured "Map is complete with all the continents..." as if it
+ * were the standard, which is wrong — the marks entry for the S<n> node
+ * itself (already present in whatever response returned it as a child) is
+ * the correct rolled-up score for the Standard as a whole.
+ *
+ * A fixed "N levels below Subject" rule doesn't work as a substitute: Work
+ * Ethics sits directly under the Subject (1 level down), while Standards
+ * sit under a Subskill (2 levels down) — so short_name is checked first,
+ * falling back to "no children at all" for leaves like Work Ethics that
+ * don't follow the S<n> naming (that fallback also covers Socio-Emotional
+ * Learning's own leaves, which have no standardized short_name at all).
+ */
+function isStandardOrLeaf(shortName, hasChildren) {
+  if (/^S\d+$/.test(shortName || '')) return true;
+  return !hasChildren;
+}
+
 async function getChildrenFromData(page, domLabel) {
   return page.evaluate((lbl) => {
     for (const g of document.querySelectorAll('g.node')) {
@@ -130,6 +156,7 @@ async function getChildrenFromData(page, domLabel) {
           name: c.name || '',
           uuid: c.uuid || '',
           type: c.type || '',
+          shortName: c.short_name || '',
           planId: c.plan_id || '',
           hasChildren: !!(c.children_uuids && c.children_uuids.length > 0),
         }))
@@ -359,7 +386,7 @@ async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
       }
     }
 
-    const isLeaf = !childInfo.children_uuids || childInfo.children_uuids.length === 0;
+    const isLeaf = isStandardOrLeaf(childInfo.short_name, childInfo.children_uuids && childInfo.children_uuids.length > 0);
     if (isLeaf) {
       const leafMarks = marks[childUuid];
       if (!leafMarks) {
@@ -413,7 +440,7 @@ async function expandAssessmentNode(page, authCtx, assessmentNode, ctx) {
 
   const children = await getChildrenFromData(page, domLabel);
   for (const child of children) {
-    if (child.hasChildren) {
+    if (!isStandardOrLeaf(child.shortName, child.hasChildren)) {
       // collectViaApi only detects "this is a Subject" by seeing a
       // course_paper-typed *child* inside a parent's response — starting
       // the recursion directly at the Subject's own uuid skips that one
