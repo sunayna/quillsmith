@@ -65,18 +65,6 @@ async function findFullLabel(page, label) {
   return null;
 }
 
-async function getNodeUuid(page, domLabel) {
-  return page.evaluate((lbl) => {
-    for (const g of document.querySelectorAll('g.node')) {
-      const nameEl = g.querySelector('text.node-name');
-      if (nameEl && nameEl.textContent.trim() === lbl) {
-        return g.__data__?.uuid || null;
-      }
-    }
-    return null;
-  }, domLabel);
-}
-
 async function isExpandable(page, domLabel) {
   return page.evaluate((lbl) => {
     for (const g of document.querySelectorAll('g.node')) {
@@ -91,19 +79,6 @@ async function isExpandable(page, domLabel) {
   }, domLabel);
 }
 
-async function zoomOut(page, times = 5) {
-  for (let i = 0; i < times; i++) {
-    await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('button, a'));
-      const zoomOut = btns.find(b =>
-        b.querySelector('span.icon-minus') && !b.closest('g')
-      );
-      zoomOut?.click();
-    });
-    await delay(150);
-  }
-}
-
 async function expandNode(page, domLabel) {
   const handles = await page.$$('text.node-name');
   let target = null;
@@ -114,16 +89,34 @@ async function expandNode(page, domLabel) {
   if (!target) return false;
 
   const group = await target.evaluateHandle(el => el.closest('g.node'));
-  const btn   = await group.evaluateHandle(el => el.querySelector('g.svg-btn.open-close-btn'));
-  const box   = await btn.boundingBox();
+  // Scroll into view before clicking — with many sequential expansions
+  // across a whole grade/section walk, newly revealed nodes can render
+  // outside the current viewport, and clicking blind coordinates there
+  // silently misses. (This function intentionally does NOT zoom out after
+  // expanding, unlike earlier versions of this script — repeated zoom-out
+  // clicks compound across every expansion in a long-lived browser session
+  // and can shrink the tree to an unusably tiny, unclickable scale.)
+  await group.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'center' }));
+  await delay(200);
+  const btn = await group.evaluateHandle(el => el.querySelector('g.svg-btn.open-close-btn'));
+  const box = await btn.boundingBox();
   if (!box) return false;
 
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  await delay(1500);
-  await zoomOut(page, 5);
+  await delay(1000);
   return true;
 }
 
+/**
+ * Children of a node from D3 __data__ — reading this does NOT require the
+ * child to have been expanded itself, only the parent. Each child carries
+ * its own plan_id and children_uuids fields already, straight off the
+ * parent's data — confirmed live: a Subject (course_paper) node can belong
+ * to a different underlying plan than its container (Assessment/Term), but
+ * that correct plan_id is sitting right here for free, no separate lookup
+ * or expand click needed. children_uuids reliably tells us whether a child
+ * is a true leaf even before it's ever been expanded itself.
+ */
 async function getChildrenFromData(page, domLabel) {
   return page.evaluate((lbl) => {
     for (const g of document.querySelectorAll('g.node')) {
@@ -132,21 +125,18 @@ async function getChildrenFromData(page, domLabel) {
       const d = g.__data__;
       if (!d) return [];
       const kids = d.children || d._children || [];
-      return kids.map(c => ({ name: c.name || '', uuid: c.uuid || '' })).filter(c => c.uuid);
+      return kids
+        .map(c => ({
+          name: c.name || '',
+          uuid: c.uuid || '',
+          type: c.type || '',
+          planId: c.plan_id || '',
+          hasChildren: !!(c.children_uuids && c.children_uuids.length > 0),
+        }))
+        .filter(c => c.uuid);
     }
     return [];
   }, domLabel);
-}
-
-async function findDomLabelByUuid(page, uuid) {
-  return page.evaluate((uid) => {
-    for (const g of document.querySelectorAll('g.node')) {
-      if (g.__data__?.uuid === uid) {
-        return g.querySelector('text.node-name')?.textContent.trim() || null;
-      }
-    }
-    return null;
-  }, uuid);
 }
 
 // ─── Direct API extraction ─────────────────────────────────────────────────
@@ -178,13 +168,18 @@ async function getCsrfToken(page) {
 }
 
 /**
- * Open a node's 3-dot menu just long enough to read the href of its
- * "Enter / View Marks" link — that href already carries access_token and
- * current_user_profile_id, so we don't need to open the actual marks popup.
- * access_token/current_user_profile_id are session-level, not node-specific,
- * so it doesn't matter which node we sample this from.
+ * Open a node's 3-dot menu and click "Enter / View Marks" — that click
+ * (handled entirely in JS, not a plain href) fires the same
+ * exam_plan_node_marks/fetch request we call directly later, so we
+ * intercept that one response to read off access_token and
+ * current_user_profile_id. Both are session-level, not node-specific, so
+ * it doesn't matter which node we sample this from.
  */
 async function sampleAuthParams(page, domLabel) {
+  // Force a fresh response (not a cached 304 with an empty body) so the
+  // response listener below reliably gets the full JSON.
+  await page.setCacheEnabled(false);
+
   const handles = await page.$$('text.node-name');
   let target = null;
   for (const el of handles) {
@@ -210,29 +205,54 @@ async function sampleAuthParams(page, domLabel) {
   await page.mouse.click(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
   await delay(800);
 
-  const href = await page.evaluate(() => {
+  let captured = null;
+  const onResponse = async (res) => {
+    if (captured) return;
+    const ct = res.headers()['content-type'] || '';
+    if (!ct.includes('application/json')) return;
+    try {
+      const json = await res.json();
+      if (json && json.access_token && json.current_user_profile_id) {
+        captured = json;
+      }
+    } catch (e) { /* not JSON, or body already consumed — ignore */ }
+  };
+  page.on('response', onResponse);
+
+  const clicked = await page.evaluate(() => {
     const link = Array.from(document.querySelectorAll('#node-options-popbox a.hook'))
       .find(a => a.textContent.includes('Enter / View Marks'));
-    return link ? link.getAttribute('href') : null;
+    if (link) { link.click(); return true; }
+    return false;
   });
 
-  await page.evaluate(() => {
-    if (typeof closeAllPopbox === 'function') closeAllPopbox();
-  });
+  if (!clicked) {
+    page.off('response', onResponse);
+    throw new Error(`Could not find "Enter / View Marks" link on: ${domLabel} to sample auth params`);
+  }
+
+  // wait for the response to land, polling briefly rather than one fixed sleep
+  for (let i = 0; i < 20 && !captured; i++) await delay(200);
+  page.off('response', onResponse);
+
+  // close whatever popup/modal opened as a side effect of the click
+  await page.evaluate(() => document.querySelector('#cboxClose')?.click());
+  await page.evaluate(() => { if (typeof closeAllPopbox === 'function') closeAllPopbox(); });
   await page.keyboard.press('Escape').catch(() => {});
   await delay(300);
 
-  if (!href) throw new Error(`Could not find "Enter / View Marks" link on: ${domLabel} to sample auth params`);
-  const url = new URL(href, page.url());
+  if (!captured) throw new Error(`Timed out waiting for auth params after clicking "Enter / View Marks" on: ${domLabel}`);
   return {
-    accessToken: url.searchParams.get('access_token'),
-    profileId: url.searchParams.get('current_user_profile_id')
+    accessToken: captured.access_token,
+    profileId: captured.current_user_profile_id
   };
 }
 
 /**
  * Fetch marks for a single node + its direct children, using the browser's
  * own authenticated fetch (so cookies/session are reused automatically).
+ * planId is passed per-call rather than fixed globally — see getFullTree's
+ * doc comment for why that matters.
  */
 async function fetchNodeMarks(page, { baseUrl, planId, nodeUuid, csrfToken, accessToken, profileId }) {
   return page.evaluate(async (args) => {
@@ -248,6 +268,22 @@ async function fetchNodeMarks(page, { baseUrl, planId, nodeUuid, csrfToken, acce
   }, { baseUrl, planId, nodeUuid, csrfToken, accessToken, profileId });
 }
 
+/**
+ * RFC4180 field escaping. Standard names come straight from the API's raw
+ * JSON (not truncated/sanitized DOM text like the old scraper saw), and
+ * some genuinely contain embedded commas or literal newlines from
+ * multi-line text entry upstream — writing those with naive string
+ * interpolation splits a single logical row across two physical CSV lines,
+ * silently corrupting every row after it.
+ */
+function csvField(value) {
+  const s = String(value);
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
 function writeLeafRow(ctx, subject, nodeInfo, marksForNode) {
   const counts = { S: 0, P: 0, M: 0, E: 0 };
   for (const studentId of Object.keys(marksForNode)) {
@@ -258,19 +294,33 @@ function writeLeafRow(ctx, subject, nodeInfo, marksForNode) {
   const standardName = (nodeInfo.name || '').trim();
   console.log(`🎯 ${standardName} → S=${counts.S}, P=${counts.P}, M=${counts.M}, E=${counts.E}`);
 
-  const row = `${ctx.academicYear},${ctx.classAndSection},${subject || 'Unknown'},${standardName},${counts.S},${counts.P},${counts.M},${counts.E}\n`;
+  // A leaf with no course_paper ancestor (e.g. Socio-Emotional Learning,
+  // which sits directly under the Term/Assessment grouping) has no real
+  // "subject" of its own — the original netbot CSVs used the standard's
+  // own name as the Subject too in that case, so match that convention.
+  const fields = [
+    ctx.academicYear, ctx.classAndSection, subject || standardName, standardName,
+    counts.S, counts.P, counts.M, counts.E,
+  ].map(csvField);
+  const row = fields.join(',') + '\n';
   const isNewFile = !fs.existsSync(ctx.csvFilePath);
   fs.appendFileSync(ctx.csvFilePath, isNewFile ? 'Year,Class,Subject,Standard,S,P,M,E\n' + row : row, 'utf8');
 }
 
 /**
- * Recursively walk the tree via the API alone (no DOM interaction), writing
- * a CSV row for every true leaf (children_uuids null/empty).
+ * Recurses purely via the marks API — no DOM interaction at all. Confirmed
+ * live: a Subject's own plan_id (obtained once, for free, from its parent's
+ * D3 children data) stays correct for every descendant all the way down to
+ * true leaves; there's no further plan boundary crossing below Subject
+ * level. This is what makes it safe to never touch the DOM again once
+ * we're inside a subject's subtree — no more clicking, no accordion-style
+ * sibling collapse to worry about, since we simply never look at the tree
+ * view again for this branch.
  */
-async function collectLeaves(page, authCtx, nodeUuid, ctx) {
+async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
   let json;
   try {
-    json = await fetchNodeMarks(page, { ...authCtx, nodeUuid });
+    json = await fetchNodeMarks(page, { ...authCtx, planId, nodeUuid });
   } catch (e) {
     console.warn(`⚠️  Fetch failed for node ${nodeUuid}: ${e.message}`);
     return;
@@ -313,12 +363,82 @@ async function collectLeaves(page, authCtx, nodeUuid, ctx) {
     if (isLeaf) {
       const leafMarks = marks[childUuid];
       if (!leafMarks) {
-        console.warn(`⚠️  No marks found for leaf: ${childInfo.name}`);
+        console.warn(`⚠️  No marks found for: ${childInfo.name}`);
         continue;
       }
       writeLeafRow(ctx, subject, childInfo, leafMarks);
     } else {
-      await collectLeaves(page, authCtx, childUuid, { ...ctx, subject });
+      // Same plan_id all the way down — confirmed live two levels below a
+      // Subject, so we keep reusing it rather than re-deriving anything.
+      await collectViaApi(page, authCtx, planId, childUuid, { ...ctx, subject });
+    }
+  }
+}
+
+/**
+ * The only two levels that genuinely need real DOM expand-clicks: Term's
+ * own children (Assessment-level groupings) and each Assessment-level
+ * node's own children (Subjects, and any direct non-Subject leaves like
+ * Socio-Emotional Learning). Both are read via D3 right after their parent
+ * is expanded — no per-child DOM lookups. Once we have a child's own
+ * uuid+plan_id from that read, everything below it is pure API recursion.
+ */
+async function expandAssessmentNode(page, authCtx, assessmentNode, ctx) {
+  const domLabel = await findFullLabel(page, assessmentNode.name);
+  if (!domLabel) {
+    console.warn(`⚠️  Could not find Assessment-level node in DOM: ${assessmentNode.name} — skipping`);
+    return;
+  }
+  if (await isExpandable(page, domLabel)) {
+    await expandNode(page, domLabel);
+    await delay(500);
+  }
+
+  // One fetch at the Assessment level itself — covers any child that's a
+  // direct leaf (no Subject wrapper), which the D3 read below can identify
+  // but can't fetch marks for on its own since it uses the Assessment's own
+  // plan_id, not the (different) one Subjects use.
+  let json;
+  try {
+    json = await fetchNodeMarks(page, { ...authCtx, planId: assessmentNode.planId, nodeUuid: assessmentNode.uuid });
+  } catch (e) {
+    console.warn(`⚠️  Fetch failed for node ${assessmentNode.name}: ${e.message}`);
+    return;
+  }
+  if (!json || !json.status) {
+    console.warn(`⚠️  API returned failure for node ${assessmentNode.name}: ${json && json.message}`);
+    return;
+  }
+  const marks = json.data.marks || {};
+
+  const children = await getChildrenFromData(page, domLabel);
+  for (const child of children) {
+    if (child.hasChildren) {
+      // collectViaApi only detects "this is a Subject" by seeing a
+      // course_paper-typed *child* inside a parent's response — starting
+      // the recursion directly at the Subject's own uuid skips that one
+      // moment, so the Subject label has to be set here instead, before
+      // handing off.
+      let childCtx = ctx;
+      if (child.type === 'course_paper') {
+        if (ctx.patchSubjects && ctx.patchSubjects.length > 0) {
+          const match = ctx.patchSubjects.some(s => normalize(child.name).includes(normalize(s)));
+          if (!match) {
+            console.log(`⏭️  Skipping subject: ${child.name}`);
+            continue;
+          }
+          console.log(`✅ Patch match: ${child.name}`);
+        }
+        childCtx = { ...ctx, subject: child.name };
+      }
+      await collectViaApi(page, authCtx, child.planId, child.uuid, childCtx);
+    } else {
+      const childMarks = marks[child.uuid];
+      if (!childMarks) {
+        console.warn(`⚠️  No marks found for: ${child.name}`);
+        continue;
+      }
+      writeLeafRow(ctx, ctx.subject, child, childMarks);
     }
   }
 }
@@ -445,31 +565,25 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
     await delay(500);
   }
 
-  const termUuid = await getNodeUuid(page, termDomLabel);
-  if (!termUuid) {
-    throw new Error(`Could not resolve uuid for Term node "${termLabel}"`);
-  }
-
   const termChildren = await getChildrenFromData(page, termDomLabel);
   if (termChildren.length === 0) {
     throw new Error(`Term node "${termLabel}" has no children — nothing to extract`);
   }
 
-  const firstChildDomLabel = await findDomLabelByUuid(page, termChildren[0].uuid) || termChildren[0].name;
+  const firstChildDomLabel = await findFullLabel(page, termChildren[0].name) || termChildren[0].name;
   console.log(`🔑 Sampling auth params from: ${termChildren[0].name}`);
 
   const { accessToken, profileId } = await sampleAuthParams(page, firstChildDomLabel);
   const csrfToken = await getCsrfToken(page);
-  const { baseUrl, planId } = getPageContext(page);
+  const { baseUrl } = getPageContext(page);
 
-  if (!accessToken || !profileId || !csrfToken || !baseUrl || !planId) {
+  if (!accessToken || !profileId || !csrfToken || !baseUrl) {
     throw new Error(
       `Missing auth/context values — ` +
-      `accessToken=${!!accessToken} profileId=${!!profileId} csrfToken=${!!csrfToken} ` +
-      `baseUrl=${!!baseUrl} planId=${!!planId}`
+      `accessToken=${!!accessToken} profileId=${!!profileId} csrfToken=${!!csrfToken} baseUrl=${!!baseUrl}`
     );
   }
-  console.log(`✅ Got auth context (plan_id=${planId})`);
+  console.log(`✅ Got auth context`);
 
   if (patchSubjects.length > 0) {
     console.log(`🔧 Patch mode — only extracting: ${patchSubjects.join(', ')}\n`);
@@ -477,13 +591,16 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
     console.log(`🚀 Full run mode\n`);
   }
 
-  console.log(`🚀 Starting API-based extraction from Term: "${termLabel}"\n`);
-  await collectLeaves(
-    page,
-    { baseUrl, planId, csrfToken, accessToken, profileId },
-    termUuid,
-    { classAndSection, academicYear, subject: '', patchSubjects, csvFilePath }
-  );
+  console.log(`🚀 Starting extraction from Term: "${termLabel}"\n`);
+  const authCtx = { baseUrl, csrfToken, accessToken, profileId };
+  for (const assessmentNode of termChildren) {
+    await expandAssessmentNode(
+      page,
+      authCtx,
+      assessmentNode,
+      { classAndSection, academicYear, subject: '', patchSubjects, csvFilePath }
+    );
+  }
 
   console.log(`\n✅ Done. Wrote ${csvFilePath}`);
   return csvFilePath;
