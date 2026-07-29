@@ -25,26 +25,49 @@ GET {baseUrl}/rb_records/exam_plan_node_marks/fetch
 ```
 
 This always returns marks + tree info for exactly the node you asked about
-plus its *direct* children — never deeper. So instead of clicking through
-every node in the UI, `extract.js`:
+plus its *direct* children — never deeper, and only reliably for nodes it's
+actually valid to query directly (see the plan_id note below). So `extract.js`
+uses Puppeteer for real UI navigation only as far as it has to, then switches
+to pure API calls:
 
-1. Uses Puppeteer only for the parts that need a real browser: switching to
-   the right grade/section, expanding the Year and Term nodes, and reading
-   the full node tree straight out of D3's already-loaded `__data__` (no
-   extra network calls needed for that — it's already sitting in the page).
-2. Peeks at **one** node's "Enter / View Marks" link `href` to read off
-   `access_token` and `current_user_profile_id` (session-level values, not
-   tied to that specific node) and grabs `authenticity_token` from the
-   page's `<meta name="csrf-token">` tag.
-3. From there on, walks the entire tree by calling the API directly
-   (`page.evaluate(() => fetch(...))`, reusing the browser's own session/
-   cookies) — no more clicking, scrolling, or waiting on rendered popups.
-   Recursion is driven by `children_uuids`/`type` in the API's own JSON
-   response; a node's `type` is `"course_paper"` exactly at the Subject
-   level, which is how the Subject column is tracked without assuming a
-   fixed tree depth.
-4. Writes one CSV per section to `data/<year>/<Grade>_<Section>.csv`, format
+1. **Year** is a global-header setting (a "Year Change" popup off
+   `#year-link`), *not* a node inside the tree — the tree's own root node
+   just happens to display whatever year is currently selected, which looks
+   like a clickable year node but isn't one. `switchYear()` handles this
+   properly: converts the short form (`2025-26`) to the full form reportbee's
+   popup actually lists (`2025-2026`), and clicks the matching option if the
+   page isn't already on it. Confirmed the hard way: treating the tree's
+   year label as clickable silently extracted the wrong year's data while
+   labeling the output with the year you'd asked for.
+2. Real clicks are used for: switching grade/section, and expanding each
+   Assessment-level node (e.g. "Assessment 2") — just enough to load its
+   children (Subjects, and any direct non-Subject leaves) into D3's
+   `__data__`, read for free with no further clicking.
+3. **One click** on some node's "Enter / View Marks" link intercepts the
+   resulting network response to read off `access_token` and
+   `current_user_profile_id` (session-level values, not tied to that
+   specific node); `authenticity_token` comes from the page's
+   `<meta name="csrf-token">` tag.
+4. From an Assessment-level node's children onward, everything is pure API
+   recursion (`collectViaApi`) — no more clicking, ever. The key fact that
+   makes this safe: a Subject's own `plan_id` (read for free from its
+   parent's D3 data) stays correct for every descendant all the way to true
+   leaves — confirmed by testing multiple levels deep. This also sidesteps
+   an accordion-style UI quirk: the tree view only keeps one branch's
+   descendants rendered at a time, so drilling into one subject via real
+   clicks was silently dropping sibling subjects' data before this fix.
+5. Standard names come straight from the API's raw JSON, which can contain
+   literal commas or embedded newlines (unlike the old scraper's truncated
+   DOM text) — CSV fields are written with proper RFC4180 quoting to avoid
+   silently corrupting rows.
+6. Writes one CSV per section to `data/<year>/<Grade>_<Section>.csv`, format
    `Year,Class,Subject,Standard,S,P,M,E`.
+
+Each grade's actual section list (A–H, sometimes more) is **discovered live**
+from reportbee's own grade/section picker (`discoverSections`) rather than
+hand-maintained in config — different grades don't all have the same
+sections, and the school can add one (e.g. a grade gaining a section "I")
+without the config silently going stale.
 
 Then `build_deck.py`:
 
@@ -84,14 +107,26 @@ curl -s http://localhost:9222/json/version
 
 ## Usage
 
-Edit `config/batch.json` for the year, terms, and grade/section list, then:
+Edit `config/batch.json` for the year, terms, and which grades to run — just
+a list of grade names, no per-grade section list to maintain:
+
+```json
+{
+  "year": "2025-26",
+  "terms": ["Term 2"],
+  "grades": ["VII", "VI", "V", "IV"]
+}
+```
+
+Then:
 
 ```bash
 ./run.sh VII
 ```
 
-This extracts every section configured for Grade VII, writes their CSVs to
-`data/2025_26/`, and builds `output/2025_26/Grade_7_Data_Analysis.pptx`.
+This discovers Grade VII's actual sections live, extracts every one, writes
+their CSVs to `data/2025_26/`, and builds
+`output/2025_26/Grade_7_Data_Analysis.pptx`.
 
 Pass `--skip-deck` to only run extraction (e.g. while iterating on the
 extractor itself):
@@ -130,6 +165,15 @@ output/<year>/          — finished decks (git-ignored)
   long enough for the session to expire mid-run, later sections in that
   batch will fail with a clear auth error — rerun `./run.sh` to resample.
 - The tree-walking recursion assumes the API always returns `[queried node,
-  its direct children]` and that `type === "course_paper"` marks the
-  Subject level — both confirmed against reportbee's actual responses, but
-  if reportbee changes its API shape this will need revisiting.
+  its direct children]`, that `type === "course_paper"` marks the Subject
+  level, and that a Subject's `plan_id` is valid for every descendant below
+  it — all confirmed against reportbee's actual responses, but if reportbee
+  changes its API shape this will need revisiting.
+- `switchYear`/`switchGradeSection` depend on specific reportbee UI markup
+  (`#year-link`, `#year-popup`, `a.standard-js`, `a.section-js`, the
+  `.card-footer a.btn.gamma-btn` "View" button). If reportbee redesigns
+  these pages, navigation will need updating even though the underlying API
+  extraction wouldn't.
+- Only tested so far against Grades IV, V, VI, VII for the 2023-24 (verified
+  correct data) and 2025-26 (year-switching verified, full batch pending
+  re-verification after the year-switching fix) academic years.

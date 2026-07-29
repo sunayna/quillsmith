@@ -1,6 +1,6 @@
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { extractSection, connectToReportbeeTab } = require('./extract/extract');
+const { extractSection, connectToReportbeeTab, discoverSections } = require('./extract/extract');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -25,16 +25,22 @@ async function main() {
   const skipDeck = process.argv.includes('--skip-deck');
 
   const config = loadConfig();
-  const sections = config.grades[grade];
-  if (!sections) {
-    console.error(`❌ No sections configured for grade "${grade}" in config/batch.json`);
+  if (!config.grades.includes(grade)) {
+    console.error(`❌ Grade "${grade}" is not listed in config/batch.json`);
+    process.exit(1);
+  }
+
+  const page = await connectToReportbeeTab();
+
+  console.log(`🔎 Discovering sections for Grade ${grade}, Year ${config.year}...`);
+  const sections = await discoverSections(page, config.year, grade);
+  if (sections.length === 0) {
+    console.error(`❌ No sections found for Grade ${grade} in Year ${config.year} — check the grade exists for that year`);
     process.exit(1);
   }
 
   console.log(`▶️  Batch: Grade ${grade}  |  Year: ${config.year}  |  Terms: ${config.terms.join(', ')}`);
-  console.log(`   Sections: ${sections.join(', ')}\n`);
-
-  const page = await connectToReportbeeTab();
+  console.log(`   Sections found: ${sections.join(', ')}\n`);
 
   const failures = [];
   for (const term of config.terms) {

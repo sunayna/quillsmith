@@ -457,6 +457,68 @@ async function clickFirstAvailableNode(page) {
   return false;
 }
 
+/**
+ * The academic year is a page-level / global-header setting (a "Year
+ * Change" popup off #year-link), NOT a node inside the exam-plan tree —
+ * confirmed live after shipping data under the wrong year: the tree's own
+ * root node just happens to display whatever year is currently selected
+ * globally, so searching the tree for a year label only ever finds
+ * whichever year was already active, never actually switches it. The popup
+ * lists years in full "2025-2026" form, not the "2025-26" short form used
+ * elsewhere, so this converts before matching.
+ */
+function toFullYearFormat(yearLabel) {
+  const m = yearLabel.match(/^(\d{4})-(\d{2,4})$/);
+  if (!m) return yearLabel;
+  const [, startYear, endPart] = m;
+  if (endPart.length === 4) return yearLabel;
+  return `${startYear}-${startYear.slice(0, 2)}${endPart}`;
+}
+
+async function switchYear(page, yearLabel) {
+  const fullYear = toFullYearFormat(yearLabel);
+  const current = await page.evaluate(() => document.querySelector('.year-name')?.textContent.trim() || null);
+  if (current === fullYear) {
+    console.log(`✅ Already on year ${fullYear}`);
+    return;
+  }
+
+  console.log(`🔄 Switching year: ${current} → ${fullYear}`);
+  const hasYearLink = await page.evaluate(() => !!document.querySelector('#year-link'));
+  if (!hasYearLink) {
+    throw new Error(`Could not find year switcher (#year-link) on the current page`);
+  }
+
+  await page.evaluate(() => document.querySelector('#year-link')?.click());
+  await delay(800);
+
+  const clicked = await page.evaluate((fy) => {
+    const popup = document.querySelector('#year-popup');
+    if (!popup) return false;
+    const link = Array.from(popup.querySelectorAll('a')).find(a => a.textContent.trim() === fy);
+    if (link) { link.click(); return true; }
+    return false;
+  }, fullYear);
+
+  if (!clicked) {
+    throw new Error(`Could not find year option "${fullYear}" in the year-change popup`);
+  }
+
+  // Changing year navigates to a fresh select_class page (grade/section
+  // picker), not back to wherever we were.
+  await Promise.race([
+    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {}),
+    delay(3000),
+  ]);
+  await delay(1000);
+}
+
+/**
+ * Handles two different starting points: the normal exam-plan tree page
+ * (has an "all standards" link that opens the grade/section picker popup),
+ * and the select_class page landed on right after switchYear() runs (the
+ * same grade/section picker, just already open with no popup to trigger).
+ */
 async function switchGradeSection(page, grade, section) {
   const currentClass = await page.evaluate(() =>
     document.querySelector('a.all-standards-link')?.textContent.trim() || ''
@@ -468,9 +530,12 @@ async function switchGradeSection(page, grade, section) {
     return expectedClass;
   }
 
-  await page.evaluate(() => document.querySelector('a.all-standards-link')?.click());
-  await page.waitForSelector('#all-standards-list', { visible: true });
-  await delay(500);
+  const hasAllStandardsLink = await page.evaluate(() => !!document.querySelector('a.all-standards-link'));
+  if (hasAllStandardsLink) {
+    await page.evaluate(() => document.querySelector('a.all-standards-link')?.click());
+    await page.waitForSelector('#all-standards-list', { visible: true });
+    await delay(500);
+  }
 
   await page.evaluate((g) => {
     Array.from(document.querySelectorAll('a.standard-js'))
@@ -515,6 +580,7 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
   const [grade, ...sectionParts] = gradeSection.split(/\s+/);
   const section = sectionParts.join(' ');
 
+  await switchYear(page, yearLabel);
   const classAndSection = await switchGradeSection(page, grade, section);
   const academicYear = yearLabel;
 
@@ -606,6 +672,33 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
   return csvFilePath;
 }
 
+/**
+ * Reads the real, current list of sections for a grade straight from
+ * reportbee's own grade/section picker — the same a.section-js elements
+ * switchGradeSection clicks — instead of relying on a hand-maintained list
+ * that can silently drift out of sync (confirmed live: Grade VII gained a
+ * section "I" this year that a static config list missed entirely, and
+ * different grades don't all have the same sections to begin with).
+ */
+async function discoverSections(page, yearLabel, grade) {
+  await switchYear(page, yearLabel);
+
+  const hasAllStandardsLink = await page.evaluate(() => !!document.querySelector('a.all-standards-link'));
+  if (hasAllStandardsLink) {
+    await page.evaluate(() => document.querySelector('a.all-standards-link')?.click());
+    await page.waitForSelector('#all-standards-list', { visible: true });
+    await delay(500);
+  }
+
+  const sections = await page.evaluate((g) => {
+    return Array.from(document.querySelectorAll('a.section-js'))
+      .filter(a => a.dataset.standardname.trim() === g)
+      .map(a => a.dataset.sectionname.trim());
+  }, grade);
+
+  return sections;
+}
+
 // ─── CLI entrypoint (manual single-section runs / debugging) ───────────────
 
 async function connectToReportbeeTab() {
@@ -623,7 +716,7 @@ async function runCli() {
   process.exit(0);
 }
 
-module.exports = { extractSection, connectToReportbeeTab };
+module.exports = { extractSection, connectToReportbeeTab, discoverSections };
 
 if (require.main === module) {
   runCli().catch((e) => {
