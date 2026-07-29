@@ -118,27 +118,112 @@ async function expandNode(page, domLabel) {
  * is a true leaf even before it's ever been expanded itself.
  */
 /**
- * A node is the genuine "Standard" level — what the Standard column should
- * actually capture — exactly when its short_name matches reportbee's own
- * "S<n>" convention (e.g. "S1", "S2"), regardless of whether it structurally
- * has further children. Confirmed live: a Standard can wrap an assessment
- * instance ("SA"/"FA", short_name lowercase "sa1"/"fa1") which can itself
- * wrap rubric criteria (short_name "R1", "R2", ...) — e.g. an Expedition
- * standard "Analyzes maps by using latitude and longitude..." had 4 rubric
- * criteria beneath its one SA instance. Recursing all the way to those
- * criteria captured "Map is complete with all the continents..." as if it
- * were the standard, which is wrong — the marks entry for the S<n> node
- * itself (already present in whatever response returned it as a child) is
- * the correct rolled-up score for the Standard as a whole.
- *
- * A fixed "N levels below Subject" rule doesn't work as a substitute: Work
- * Ethics sits directly under the Subject (1 level down), while Standards
- * sit under a Subskill (2 levels down) — so short_name is checked first,
- * falling back to "no children at all" for leaves like Work Ethics that
- * don't follow the S<n> naming (that fallback also covers Socio-Emotional
- * Learning's own leaves, which have no standardized short_name at all).
+ * The short_name "S<n>" convention (e.g. "S1", "S2") looked like a reliable
+ * signal for "this is the Standard" but isn't: confirmed on an Expedition
+ * standard where the real text ("Compares types of governments using world
+ * examples...") sat one level below a node that ALSO matched S<n>
+ * ("Governments: Who Holds the Power?", itself just a topic heading, not
+ * the standard). There's no fully reliable structural signal in reportbee's
+ * own tree — so this matches node names against the school's own
+ * ground-truth standards list instead (built from their "ASSESSMENT TREES"
+ * workbook, see reference/build_reference.py). Falls back to the old
+ * short_name heuristic only when no reference data exists for a given
+ * subject (e.g. an untracked subject, or a future term's workbook not yet
+ * built) — imperfect, but better than nothing.
  */
-function isStandardOrLeaf(shortName, hasChildren) {
+let standardsReferenceCache = null;
+
+function loadStandardsReference() {
+  if (standardsReferenceCache !== null) return standardsReferenceCache;
+  const refPath = path.join(__dirname, '..', '..', 'reference', 'standards_2025_26.json');
+  try {
+    standardsReferenceCache = JSON.parse(fs.readFileSync(refPath, 'utf8'));
+  } catch (e) {
+    console.warn(`⚠️  Could not load standards reference (${refPath}): ${e.message} — falling back to short_name heuristic everywhere`);
+    standardsReferenceCache = {};
+  }
+  return standardsReferenceCache;
+}
+
+// The xlsx and the live tree don't always name subjects identically
+// (e.g. "हिंदी" vs "Hindi", "Math" vs "Mathematics", "SEL" vs "Social
+// Emotional Learning" / "Socio-Emotional Learning" — the live tree itself
+// isn't even consistent on that last one across contexts).
+const SUBJECT_ALIASES = {
+  hindi: ['हिंदी'],
+  mathematics: ['math'],
+  socialemotionallearning: ['sel'],
+  socioemotionallearning: ['sel'],
+};
+
+function resolveSubjectKey(referenceForGrade, liveSubjectName) {
+  if (!referenceForGrade) return null;
+  const keys = Object.keys(referenceForGrade);
+  const normLive = normalize(liveSubjectName);
+
+  for (const k of keys) if (normalize(k) === normLive) return k;
+
+  const aliasCandidates = SUBJECT_ALIASES[normLive] || [];
+  for (const k of keys) if (aliasCandidates.includes(normalize(k))) return k;
+
+  for (const k of keys) {
+    const normK = normalize(k);
+    if (normK.includes(normLive) || normLive.includes(normK)) return k;
+  }
+  return null;
+}
+
+/**
+ * Builds a Set of normalized standard texts for one grade+subject, or null
+ * if no reference data covers that subject (signals "fall back to
+ * heuristic" to the caller).
+ */
+function getStandardsSet(grade, subject) {
+  const reference = loadStandardsReference();
+  const forGrade = reference[grade];
+  const key = resolveSubjectKey(forGrade, subject);
+  if (!key || !forGrade[key] || forGrade[key].length === 0) return null;
+  return new Set(forGrade[key].map(normalize));
+}
+
+/**
+ * Levenshtein-distance similarity ratio (0..1), same idea as Python's
+ * difflib.SequenceMatcher.ratio(). Needed because the xlsx and the live
+ * tree aren't always byte-for-byte in sync — confirmed on a Hindi standard
+ * where the live tree had "घटनाक्रम" and the xlsx had "घटना-क्रम" (a small
+ * genuine content edit between the two sources, not a whitespace/encoding
+ * artifact), which exact-match comparison will always miss.
+ */
+function similarity(a, b) {
+  if (a === b) return 1;
+  const m = a.length, n = b.length;
+  if (m === 0 || n === 0) return 0;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  const distance = prev[n];
+  return 1 - distance / Math.max(m, n);
+}
+
+const FUZZY_MATCH_THRESHOLD = 0.85;
+
+function isStandardOrLeaf(nodeName, shortName, hasChildren, standardsSet) {
+  if (standardsSet) {
+    const normalizedName = normalize(nodeName);
+    if (standardsSet.has(normalizedName)) return true;
+    for (const candidate of standardsSet) {
+      if (similarity(normalizedName, candidate) >= FUZZY_MATCH_THRESHOLD) return true;
+    }
+    return !hasChildren;
+  }
   if (/^S\d+$/.test(shortName || '')) return true;
   return !hasChildren;
 }
@@ -219,17 +304,35 @@ async function sampleAuthParams(page, domLabel) {
   await group.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'center' }));
   await delay(300);
 
-  const groupBox = await group.boundingBox();
-  if (groupBox) {
-    await page.mouse.move(groupBox.x + groupBox.width / 2, groupBox.y + groupBox.height / 2);
-    await delay(300);
-  }
+  // The option button is revealed by CSS (`.node:hover .option-btn` or
+  // `.node.selected .option-btn { display: block }`) — confirmed live that
+  // simulating real hover via mouse.move is unreliable (works sometimes,
+  // silently leaves the button at display:none other times, e.g. on a
+  // freshly-loaded 2025-26 exam plan). Adding the `selected` class directly
+  // is deterministic since it's an explicit CSS alternative to hover, not a
+  // workaround relying on synthetic events triggering real hover state.
+  await group.evaluate(el => el.classList.add('selected'));
+  await delay(200);
 
   const optionBtn = await group.evaluateHandle(el => el.querySelector('g.svg-btn.option-btn'));
   const btnBox = await optionBtn.boundingBox();
-  if (!btnBox) throw new Error(`Options button not found for sampling on: ${domLabel}`);
+  if (!btnBox) {
+    await group.evaluate(el => el.classList.remove('selected'));
+    throw new Error(`Options button not found for sampling on: ${domLabel}`);
+  }
 
-  await page.mouse.click(btnBox.x + btnBox.width / 2, btnBox.y + btnBox.height / 2);
+  // A coordinate-based page.mouse.click() here reliably opened an EMPTY
+  // options popup (no menu items) — the site's handler apparently needs the
+  // mouseover/mousedown/mouseup/click sequence to fire in order to actually
+  // populate the popup content, not just register a bare click at the right
+  // pixel. Dispatching the events directly on the element sidesteps whatever
+  // coordinate/hit-testing mismatch caused that.
+  await optionBtn.evaluate(el => {
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
   await delay(800);
 
   let captured = null;
@@ -266,6 +369,7 @@ async function sampleAuthParams(page, domLabel) {
   await page.evaluate(() => document.querySelector('#cboxClose')?.click());
   await page.evaluate(() => { if (typeof closeAllPopbox === 'function') closeAllPopbox(); });
   await page.keyboard.press('Escape').catch(() => {});
+  await group.evaluate(el => el.classList.remove('selected'));
   await delay(300);
 
   if (!captured) throw new Error(`Timed out waiting for auth params after clicking "Enter / View Marks" on: ${domLabel}`);
@@ -386,7 +490,12 @@ async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
       }
     }
 
-    const isLeaf = isStandardOrLeaf(childInfo.short_name, childInfo.children_uuids && childInfo.children_uuids.length > 0);
+    const standardsSet = getStandardsSet(ctx.grade, subject);
+    const isLeaf = isStandardOrLeaf(
+      childInfo.name, childInfo.short_name,
+      childInfo.children_uuids && childInfo.children_uuids.length > 0,
+      standardsSet
+    );
     if (isLeaf) {
       const leafMarks = marks[childUuid];
       if (!leafMarks) {
@@ -440,7 +549,8 @@ async function expandAssessmentNode(page, authCtx, assessmentNode, ctx) {
 
   const children = await getChildrenFromData(page, domLabel);
   for (const child of children) {
-    if (!isStandardOrLeaf(child.shortName, child.hasChildren)) {
+    const standardsSet = getStandardsSet(ctx.grade, ctx.subject);
+    if (!isStandardOrLeaf(child.name, child.shortName, child.hasChildren, standardsSet)) {
       // collectViaApi only detects "this is a Subject" by seeing a
       // course_paper-typed *child* inside a parent's response — starting
       // the recursion directly at the Subject's own uuid skips that one
@@ -691,7 +801,7 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
       page,
       authCtx,
       assessmentNode,
-      { classAndSection, academicYear, subject: '', patchSubjects, csvFilePath }
+      { classAndSection, academicYear, grade, subject: '', patchSubjects, csvFilePath }
     );
   }
 
