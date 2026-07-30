@@ -42,7 +42,14 @@ async function main() {
   console.log(`▶️  Batch: Grade ${grade}  |  Year: ${config.year}  |  Terms: ${config.terms.join(', ')}`);
   console.log(`   Sections found: ${sections.join(', ')}\n`);
 
+  const yearFolder = config.year.replace(/-/g, '_');
+  const gradeLabel = `Grade ${romanToArabic(grade)}`;
   const failures = [];
+
+  // A deck is built per term, not per grade — each term's report is a
+  // separate document a school actually hands out, and CSVs live in
+  // per-term folders (data/<year>/<term>/) so extracting Term 2 can never
+  // silently overwrite Term 1's data the way a shared filename would.
   for (const term of config.terms) {
     for (const section of sections) {
       const gradeSection = `${grade} ${section}`;
@@ -61,26 +68,35 @@ async function main() {
         failures.push({ gradeSection, term, error: e.message });
       }
     }
+
+    if (skipDeck) continue;
+
+    const termFolder = term.replace(/\s+/g, '_');
+    const dataFolder = path.join('data', yearFolder, termFolder);
+    const filteredFolder = path.join(dataFolder, 'filtered');
+    const outPath = path.join(ROOT, 'output', yearFolder, termFolder, `Grade_${romanToArabic(grade)}_${termFolder}_Data_Analysis.pptx`);
+
+    console.log(`\n▶️  Filtering standards: ${gradeLabel}, ${term}`);
+    execFileSync(
+      'python3',
+      [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), dataFolder, config.year],
+      { cwd: ROOT, stdio: 'inherit' }
+    );
+
+    console.log(`\n▶️  Building deck: ${gradeLabel}, ${term}`);
+    execFileSync(
+      'python3',
+      [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath],
+      { cwd: ROOT, stdio: 'inherit' }
+    );
   }
 
-  console.log(`\n🎉 Extraction done. ${sections.length * config.terms.length - failures.length}/${sections.length * config.terms.length} sections succeeded.`);
+  const totalRuns = sections.length * config.terms.length;
+  console.log(`\n🎉 Extraction done. ${totalRuns - failures.length}/${totalRuns} sections succeeded.`);
   if (failures.length > 0) {
     console.log('⚠️  Failures:');
     for (const f of failures) console.log(`   - ${f.gradeSection} | ${f.term}: ${f.error}`);
   }
-
-  if (skipDeck) {
-    process.exit(failures.length > 0 ? 1 : 0);
-  }
-
-  const yearFolder = config.year.replace(/-/g, '_');
-  const gradeLabel = `Grade ${romanToArabic(grade)}`;
-  console.log(`\n▶️  Building deck: ${gradeLabel}`);
-  execFileSync(
-    'python3',
-    [path.join(ROOT, 'src', 'deck', 'build_deck.py'), path.join('data', yearFolder), gradeLabel],
-    { cwd: ROOT, stdio: 'inherit' }
-  );
 
   process.exit(failures.length > 0 ? 1 : 0);
 }

@@ -2,7 +2,8 @@
 Builds a Data Analysis deck from a folder of per-section CSVs:
 one file per class section (VII_A.csv, VII_B.csv, ...), each a "long"
 table with one row per (Year, Class, Subject, Standard, S, P, M, E) —
-exactly what src/extract/extract.js writes into data/<year>/.
+what src/filter/filter_standards.py writes after selecting Standard rows
+out of extract.js's raw per-node dump (data/<year>/<term>/filtered/).
 
 Ported from the Term Data project's section_csv_deck.py. That version
 left the assembled deck as an unpacked directory and relied on a manual
@@ -195,19 +196,35 @@ def main():
     roman = {v: k for k, v in ROMAN.items()}.get(int(grade_num)) if grade_num.isdigit() else None
     filename_prefix = f"{roman}_" if roman else None
 
-    session_m = re.search(r"(\d{4})[_-](\d{2,4})", os.path.basename(folder.rstrip("/")))
-    session_label = f"{session_m.group(1)}-{session_m.group(2)}" if session_m else "Unknown"
+    # data/<year>/<term>/ means neither the year nor the term pattern is
+    # necessarily in the immediate folder name — walk every path component
+    # looking for each independently (a folder called just "Term_1" won't
+    # match the year pattern, and vice versa).
+    session_label = "Unknown"
+    term_num = None
+    for part in os.path.normpath(folder).split(os.sep):
+        if session_label == "Unknown":
+            ym = re.search(r"(\d{4})[_-](\d{2,4})", part)
+            if ym:
+                session_label = f"{ym.group(1)}-{ym.group(2)}"
+        if term_num is None:
+            tm = re.search(r"term[_ ]?(\d+)", part, re.I)
+            if tm:
+                term_num = tm.group(1)
+    subtitle_label = f"(TERM {term_num})" if term_num else ""
+    term_folder = f"Term_{term_num}" if term_num else None
 
-    tag = f"G{grade_num}_{session_label.replace('-', '_')}"
+    tag = f"G{grade_num}_{session_label.replace('-', '_')}" + (f"_T{term_num}" if term_num else "")
 
     if len(sys.argv) >= 4:
         out_path = sys.argv[3]
         out_path = out_path if os.path.isabs(out_path) else os.path.join(ROOT, out_path)
     else:
-        out_path = os.path.join(
-            ROOT, "output", session_label.replace("-", "_"),
-            f"Grade_{grade_num}_Data_Analysis.pptx",
-        )
+        out_dir = [ROOT, "output", session_label.replace("-", "_")]
+        if term_folder:
+            out_dir.append(term_folder)
+        name_suffix = f"_{term_folder}" if term_folder else ""
+        out_path = os.path.join(*out_dir, f"Grade_{grade_num}{name_suffix}_Data_Analysis.pptx")
 
     print(f"=== reading section CSVs from {folder} (prefix {filename_prefix!r}) ===")
     subject_order, blocks = build_blocks(folder, filename_prefix)
@@ -237,7 +254,7 @@ def main():
 
     assemble(
         unpacked, subject_order, blocks, grade_num,
-        session_label=session_label, subtitle_label="",
+        session_label=session_label, subtitle_label=subtitle_label,
     )
 
     print("=== zipping into .pptx ===")

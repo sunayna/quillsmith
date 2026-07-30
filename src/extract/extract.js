@@ -117,117 +117,6 @@ async function expandNode(page, domLabel) {
  * or expand click needed. children_uuids reliably tells us whether a child
  * is a true leaf even before it's ever been expanded itself.
  */
-/**
- * The short_name "S<n>" convention (e.g. "S1", "S2") looked like a reliable
- * signal for "this is the Standard" but isn't: confirmed on an Expedition
- * standard where the real text ("Compares types of governments using world
- * examples...") sat one level below a node that ALSO matched S<n>
- * ("Governments: Who Holds the Power?", itself just a topic heading, not
- * the standard). There's no fully reliable structural signal in reportbee's
- * own tree — so this matches node names against the school's own
- * ground-truth standards list instead (built from their "ASSESSMENT TREES"
- * workbook, see reference/build_reference.py). Falls back to the old
- * short_name heuristic only when no reference data exists for a given
- * subject (e.g. an untracked subject, or a future term's workbook not yet
- * built) — imperfect, but better than nothing.
- */
-let standardsReferenceCache = null;
-
-function loadStandardsReference() {
-  if (standardsReferenceCache !== null) return standardsReferenceCache;
-  const refPath = path.join(__dirname, '..', '..', 'reference', 'standards_2025_26.json');
-  try {
-    standardsReferenceCache = JSON.parse(fs.readFileSync(refPath, 'utf8'));
-  } catch (e) {
-    console.warn(`⚠️  Could not load standards reference (${refPath}): ${e.message} — falling back to short_name heuristic everywhere`);
-    standardsReferenceCache = {};
-  }
-  return standardsReferenceCache;
-}
-
-// The xlsx and the live tree don't always name subjects identically
-// (e.g. "हिंदी" vs "Hindi", "Math" vs "Mathematics", "SEL" vs "Social
-// Emotional Learning" / "Socio-Emotional Learning" — the live tree itself
-// isn't even consistent on that last one across contexts).
-const SUBJECT_ALIASES = {
-  hindi: ['हिंदी'],
-  mathematics: ['math'],
-  socialemotionallearning: ['sel'],
-  socioemotionallearning: ['sel'],
-};
-
-function resolveSubjectKey(referenceForGrade, liveSubjectName) {
-  if (!referenceForGrade) return null;
-  const keys = Object.keys(referenceForGrade);
-  const normLive = normalize(liveSubjectName);
-
-  for (const k of keys) if (normalize(k) === normLive) return k;
-
-  const aliasCandidates = SUBJECT_ALIASES[normLive] || [];
-  for (const k of keys) if (aliasCandidates.includes(normalize(k))) return k;
-
-  for (const k of keys) {
-    const normK = normalize(k);
-    if (normK.includes(normLive) || normLive.includes(normK)) return k;
-  }
-  return null;
-}
-
-/**
- * Builds a Set of normalized standard texts for one grade+subject, or null
- * if no reference data covers that subject (signals "fall back to
- * heuristic" to the caller).
- */
-function getStandardsSet(grade, subject) {
-  const reference = loadStandardsReference();
-  const forGrade = reference[grade];
-  const key = resolveSubjectKey(forGrade, subject);
-  if (!key || !forGrade[key] || forGrade[key].length === 0) return null;
-  return new Set(forGrade[key].map(normalize));
-}
-
-/**
- * Levenshtein-distance similarity ratio (0..1), same idea as Python's
- * difflib.SequenceMatcher.ratio(). Needed because the xlsx and the live
- * tree aren't always byte-for-byte in sync — confirmed on a Hindi standard
- * where the live tree had "घटनाक्रम" and the xlsx had "घटना-क्रम" (a small
- * genuine content edit between the two sources, not a whitespace/encoding
- * artifact), which exact-match comparison will always miss.
- */
-function similarity(a, b) {
-  if (a === b) return 1;
-  const m = a.length, n = b.length;
-  if (m === 0 || n === 0) return 0;
-  let prev = new Array(n + 1);
-  let curr = new Array(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    [prev, curr] = [curr, prev];
-  }
-  const distance = prev[n];
-  return 1 - distance / Math.max(m, n);
-}
-
-const FUZZY_MATCH_THRESHOLD = 0.85;
-
-function isStandardOrLeaf(nodeName, shortName, hasChildren, standardsSet) {
-  if (standardsSet) {
-    const normalizedName = normalize(nodeName);
-    if (standardsSet.has(normalizedName)) return true;
-    for (const candidate of standardsSet) {
-      if (similarity(normalizedName, candidate) >= FUZZY_MATCH_THRESHOLD) return true;
-    }
-    return !hasChildren;
-  }
-  if (/^S\d+$/.test(shortName || '')) return true;
-  return !hasChildren;
-}
-
 async function getChildrenFromData(page, domLabel) {
   return page.evaluate((lbl) => {
     for (const g of document.querySelectorAll('g.node')) {
@@ -415,27 +304,45 @@ function csvField(value) {
   return s;
 }
 
-function writeLeafRow(ctx, subject, nodeInfo, marksForNode) {
+/**
+ * Writes one row per node — every node, not just ones guessed to be "the
+ * Standard". Deciding which rows are real Standards is deliberately NOT
+ * this script's job: reportbee's tree has no fully reliable structural
+ * signal for that (short_name "S<n>" looked like one but wasn't — a topic
+ * heading and the real standard beneath it can both match it), and years
+ * without a ground-truth workbook have no standardized tree shape at all
+ * to reason about live. Dumping everything (with each node's own rolled-up
+ * marks and its ancestry path) turns "which row is the standard" into an
+ * offline row-selection problem on a CSV instead — fast to iterate on, and
+ * it doesn't need reportbee or a browser at all.
+ */
+function writeRawRow(ctx, subject, ancestryPath, nodeInfo, marksForNode) {
   const counts = { S: 0, P: 0, M: 0, E: 0 };
   for (const studentId of Object.keys(marksForNode)) {
     const grade = marksForNode[studentId].grade;
     if (Object.prototype.hasOwnProperty.call(counts, grade)) counts[grade]++;
   }
 
-  const standardName = (nodeInfo.name || '').trim();
-  console.log(`🎯 ${standardName} → S=${counts.S}, P=${counts.P}, M=${counts.M}, E=${counts.E}`);
+  const nodeName = (nodeInfo.name || '').trim();
+  const pathStr = ancestryPath.join(' > ');
+  console.log(`🎯 [${pathStr}] ${nodeName} → S=${counts.S}, P=${counts.P}, M=${counts.M}, E=${counts.E}`);
 
-  // A leaf with no course_paper ancestor (e.g. Socio-Emotional Learning,
+  // A node with no course_paper ancestor (e.g. Socio-Emotional Learning,
   // which sits directly under the Term/Assessment grouping) has no real
-  // "subject" of its own — the original netbot CSVs used the standard's
-  // own name as the Subject too in that case, so match that convention.
+  // "subject" of its own — match the original convention of using the
+  // node's own name as the Subject too in that case.
   const fields = [
-    ctx.academicYear, ctx.classAndSection, subject || standardName, standardName,
+    ctx.academicYear, ctx.classAndSection, subject || nodeName, pathStr, nodeName,
+    nodeInfo.type || '', nodeInfo.short_name || nodeInfo.shortName || '',
     counts.S, counts.P, counts.M, counts.E,
   ].map(csvField);
   const row = fields.join(',') + '\n';
   const isNewFile = !fs.existsSync(ctx.csvFilePath);
-  fs.appendFileSync(ctx.csvFilePath, isNewFile ? 'Year,Class,Subject,Standard,S,P,M,E\n' + row : row, 'utf8');
+  fs.appendFileSync(
+    ctx.csvFilePath,
+    isNewFile ? 'Year,Class,Subject,Path,NodeName,Type,ShortName,S,P,M,E\n' + row : row,
+    'utf8'
+  );
 }
 
 /**
@@ -447,8 +354,12 @@ function writeLeafRow(ctx, subject, nodeInfo, marksForNode) {
  * we're inside a subject's subtree — no more clicking, no accordion-style
  * sibling collapse to worry about, since we simply never look at the tree
  * view again for this branch.
+ *
+ * Writes a row for every child (leaf or not) and recurses into any child
+ * that structurally has further children — always to true leaves, with no
+ * "is this the Standard" decision made here at all (see writeRawRow).
  */
-async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
+async function collectAllNodes(page, authCtx, planId, nodeUuid, ancestryPath, ctx) {
   let json;
   try {
     json = await fetchNodeMarks(page, { ...authCtx, planId, nodeUuid });
@@ -490,23 +401,18 @@ async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
       }
     }
 
-    const standardsSet = getStandardsSet(ctx.grade, subject);
-    const isLeaf = isStandardOrLeaf(
-      childInfo.name, childInfo.short_name,
-      childInfo.children_uuids && childInfo.children_uuids.length > 0,
-      standardsSet
-    );
-    if (isLeaf) {
-      const leafMarks = marks[childUuid];
-      if (!leafMarks) {
-        console.warn(`⚠️  No marks found for: ${childInfo.name}`);
-        continue;
-      }
-      writeLeafRow(ctx, subject, childInfo, leafMarks);
+    const childMarks = marks[childUuid];
+    if (childMarks) {
+      writeRawRow(ctx, subject, ancestryPath, childInfo, childMarks);
     } else {
+      console.warn(`⚠️  No marks found for: ${childInfo.name}`);
+    }
+
+    const hasChildren = childInfo.children_uuids && childInfo.children_uuids.length > 0;
+    if (hasChildren) {
       // Same plan_id all the way down — confirmed live two levels below a
       // Subject, so we keep reusing it rather than re-deriving anything.
-      await collectViaApi(page, authCtx, planId, childUuid, { ...ctx, subject });
+      await collectAllNodes(page, authCtx, planId, childUuid, [...ancestryPath, childInfo.name], { ...ctx, subject });
     }
   }
 }
@@ -519,7 +425,7 @@ async function collectViaApi(page, authCtx, planId, nodeUuid, ctx) {
  * is expanded — no per-child DOM lookups. Once we have a child's own
  * uuid+plan_id from that read, everything below it is pure API recursion.
  */
-async function expandAssessmentNode(page, authCtx, assessmentNode, ctx) {
+async function expandAssessmentNode(page, authCtx, assessmentNode, ancestryPath, ctx) {
   const domLabel = await findFullLabel(page, assessmentNode.name);
   if (!domLabel) {
     console.warn(`⚠️  Could not find Assessment-level node in DOM: ${assessmentNode.name} — skipping`);
@@ -549,33 +455,33 @@ async function expandAssessmentNode(page, authCtx, assessmentNode, ctx) {
 
   const children = await getChildrenFromData(page, domLabel);
   for (const child of children) {
-    const standardsSet = getStandardsSet(ctx.grade, ctx.subject);
-    if (!isStandardOrLeaf(child.name, child.shortName, child.hasChildren, standardsSet)) {
-      // collectViaApi only detects "this is a Subject" by seeing a
-      // course_paper-typed *child* inside a parent's response — starting
-      // the recursion directly at the Subject's own uuid skips that one
-      // moment, so the Subject label has to be set here instead, before
-      // handing off.
-      let childCtx = ctx;
-      if (child.type === 'course_paper') {
-        if (ctx.patchSubjects && ctx.patchSubjects.length > 0) {
-          const match = ctx.patchSubjects.some(s => normalize(child.name).includes(normalize(s)));
-          if (!match) {
-            console.log(`⏭️  Skipping subject: ${child.name}`);
-            continue;
-          }
-          console.log(`✅ Patch match: ${child.name}`);
+    // collectAllNodes only detects "this is a Subject" by seeing a
+    // course_paper-typed *child* inside a parent's response — starting
+    // the recursion directly at the Subject's own uuid skips that one
+    // moment, so the Subject label has to be set here instead, before
+    // handing off.
+    let subject = ctx.subject;
+    if (child.type === 'course_paper') {
+      if (ctx.patchSubjects && ctx.patchSubjects.length > 0) {
+        const match = ctx.patchSubjects.some(s => normalize(child.name).includes(normalize(s)));
+        if (!match) {
+          console.log(`⏭️  Skipping subject: ${child.name}`);
+          continue;
         }
-        childCtx = { ...ctx, subject: child.name };
+        console.log(`✅ Patch match: ${child.name}`);
       }
-      await collectViaApi(page, authCtx, child.planId, child.uuid, childCtx);
+      subject = child.name;
+    }
+
+    const childMarks = marks[child.uuid];
+    if (childMarks) {
+      writeRawRow(ctx, subject, ancestryPath, child, childMarks);
     } else {
-      const childMarks = marks[child.uuid];
-      if (!childMarks) {
-        console.warn(`⚠️  No marks found for: ${child.name}`);
-        continue;
-      }
-      writeLeafRow(ctx, ctx.subject, child, childMarks);
+      console.warn(`⚠️  No marks found for: ${child.name}`);
+    }
+
+    if (child.hasChildren) {
+      await collectAllNodes(page, authCtx, child.planId, child.uuid, [...ancestryPath, child.name], { ...ctx, subject });
     }
   }
 }
@@ -722,7 +628,8 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
   const academicYear = yearLabel;
 
   const yearFolder = yearLabel.replace(/-/g, '_');
-  const dataDir = path.join(__dirname, '..', '..', 'data', yearFolder);
+  const termFolder = termLabel.replace(/\s+/g, '_');
+  const dataDir = path.join(__dirname, '..', '..', 'data', yearFolder, termFolder);
   fs.mkdirSync(dataDir, { recursive: true });
   const csvFilePath = path.join(dataDir, `${classAndSection.replace(/\s+/g, '_')}.csv`);
 
@@ -801,6 +708,7 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
       page,
       authCtx,
       assessmentNode,
+      [assessmentNode.name],
       { classAndSection, academicYear, grade, subject: '', patchSubjects, csvFilePath }
     );
   }

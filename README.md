@@ -1,20 +1,113 @@
 # Quillsmith
 
-Extracts marks/grade data straight from reportbee's own API (not by clicking
-through the UI) and builds a Data Analysis slide deck from it — one command
-per grade, from raw data to finished `.pptx`.
+Extracts marks/grade data straight from reportbee's own API and builds a
+Data Analysis slide deck from it — one command per grade, from raw data to
+finished `.pptx`.
 
-This replaces two older, separate, manual pipelines:
-- **netbot** — scraped reportbee by clicking through every single standard in
-  the UI (~7 seconds each, multiplied by every leaf in the tree).
-- **Term Data** — took the CSVs netbot produced and built a deck from them as
-  a second, manual step, using a chart/slide template that lived in a
-  temporary Claude session scratchpad path (fragile — could vanish any time).
+## Run this
 
-Quillsmith does both in one pipeline, extracts via direct API calls instead
-of clicking, and keeps its own deck template as a permanent project asset.
+**Step 1 — Open reportbee in a debuggable Chrome.** reportbee's site
+silently ignores `--remote-debugging-port` on your normal default profile
+(a Chrome 136+ security change), so it needs its own profile directory:
+```bash
+osascript -e 'quit app "Google Chrome"'   # only if Chrome is already open
+open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"
+```
+Log into reportbee.com in that window and leave the tab open. Verify the
+debug port is live:
+```bash
+curl -s http://localhost:9222/json/version
+```
+
+**Step 2 — Run the wizard:**
+```bash
+./wizard.sh
+```
+It installs any missing `npm`/`pip` dependencies itself, then prompts for
+Grade / Year / Term, extracts every section reportbee has for that grade,
+and prints exactly where the raw CSVs land. It then checks whether a
+reference workbook exists for that year (offering to build one from a file
+you point it at, or generate a blank fillable template, if not), filters
+down to the real Standard rows and prints where those land, then asks
+whether to build the PPT deck before doing it.
+
+That's the whole flow — nothing else to install or configure first.
+
+### Repeat/batch runs without the prompts
+
+If you already know the year/terms/grades and want to run several grades
+without answering prompts each time, edit `config/batch.json`:
+```json
+{
+  "year": "2025-26",
+  "terms": ["Term 2"],
+  "grades": ["VII", "VI", "V", "IV"]
+}
+```
+then:
+```bash
+./run.sh VII
+```
+This discovers Grade VII's actual sections live, extracts every one, writes
+their CSVs to `data/2025_26/Term_2/`, and builds
+`output/2025_26/Term_2/Grade_7_Term_2_Data_Analysis.pptx`. (`./run.sh`
+doesn't install dependencies for you — run `npm install` and
+`pip install -r requirements.txt` once first.)
+
+Pass `--skip-deck` to only run extraction (e.g. while iterating on the
+extractor itself):
+```bash
+./run.sh VII --skip-deck
+```
+
+To extract a single section manually (useful for debugging):
+```bash
+node src/extract/extract.js
+# then answer the prompts: Grade and Section, Year, Term, Patch subjects
+```
+
+To filter and build a deck from raw CSVs that already exist in `data/`:
+```bash
+python3 src/filter/filter_standards.py data/2023_24/Term_1 2023-24
+python3 src/deck/build_deck.py data/2023_24/Term_1/filtered "Grade 7"
+```
+
+## Project layout
+
+```
+wizard.sh               — guided entry point: installs deps, prompts for
+                           Grade/Year/Term, runs extract -> filter -> deck
+run.sh                  — scripted entry point: node src/batch.js <Grade>
+config/batch.json       — grade/section/year/term list for a batch run
+assets/deck_template/   — blank deck skeleton (unpacked .pptx), permanent asset
+reference/build_reference.py          — parses the 2025-26 "ASSESSMENT TREES"
+                                         xlsx into a ground-truth standards list
+reference/build_reference_2023_24.py  — same idea, for the differently-shaped
+                                         2023-24 "Learning Standards" workbook
+reference/make_blank_template.py — generates a blank xlsx in the 2025-26
+                                    shape, for a year with no reference yet
+reference/standards_*.json — grade -> subject -> [standard text], one per year
+src/extract/extract.js  — API-based extractor; writes one row per node (with
+                           its ancestry path) — exports extractSection() + a CLI
+src/filter/filter_standards.py — selects which rows are real Standards from a
+                                  raw dump, using reference/ + a leaf-detection
+                                  fallback for subjects with no reference coverage
+src/batch.js            — loops extractSection() over a grade's sections, then
+                           filter_standards.py, then build_deck.py
+src/wizard.js           — interactive version of the above; installs deps,
+                           prompts instead of reading config/batch.json, and
+                           asks before building the deck
+src/deck/deck_lib.py    — chart rendering + slide XML assembly
+src/deck/build_deck.py  — reads data/<year>/<term>/filtered/*.csv, builds the .pptx
+data/<year>/<term>/            — raw extraction output (git-ignored)
+data/<year>/<term>/filtered/   — filtered Standard rows (git-ignored)
+output/<year>/<term>/          — finished decks (git-ignored)
+```
 
 ## How it works
+
+Read this if you're modifying the code — skip it if you just want to run
+the pipeline (see "Run this" above).
 
 reportbee's "Enter / View Marks → View Analysis" flow calls one endpoint:
 
@@ -49,42 +142,65 @@ to pure API calls:
    specific node); `authenticity_token` comes from the page's
    `<meta name="csrf-token">` tag.
 4. From an Assessment-level node's children onward, everything is pure API
-   recursion (`collectViaApi`) — no more clicking, ever. The key fact that
+   recursion (`collectAllNodes`) — no more clicking, ever. The key fact that
    makes this safe: a Subject's own `plan_id` (read for free from its
    parent's D3 data) stays correct for every descendant all the way to true
    leaves — confirmed by testing multiple levels deep. This also sidesteps
    an accordion-style UI quirk: the tree view only keeps one branch's
    descendants rendered at a time, so drilling into one subject via real
    clicks was silently dropping sibling subjects' data before this fix.
-5. Recursion stops at the real **Standard** level using
-   `reference/standards_2025_26.json` — a ground-truth list of actual
-   standard text per grade/subject, built from the school's own "ASSESSMENT
-   TREES" workbook (`reference/build_reference.py`). This exists because
-   there's no fully reliable structural signal in reportbee's own tree for
-   "this is the Standard" versus "this is a Topic heading, an assessment
-   instance (FA/SA), or a rubric criterion beneath the real standard" — a
-   short_name convention (`"S1"`, `"S2"`, ...) looked like that signal at
-   first but wasn't: on one Expedition standard, a topic heading *and* the
-   real standard beneath it both matched `S<n>`. Node names are matched
-   against the reference with exact-then-fuzzy (Levenshtein similarity)
-   comparison, since the xlsx and the live tree occasionally have small
-   genuine text drift between them (not just whitespace/formatting).
-   Subject names also don't always match between the two sources (`हिंदी`
-   vs `Hindi`, `Math` vs `Mathematics`, inconsistent SEL naming) —
-   `resolveSubjectKey()` bridges these. Falls back to the old short_name
-   heuristic only when no reference data covers a subject.
-6. Standard names come straight from the API's raw JSON, which can contain
+5. Recursion goes all the way to true leaves **unconditionally** — every
+   node gets its own row, with its own rolled-up marks and its full
+   ancestry path (`Path` column). Extraction deliberately does *not* try to
+   decide which node is "the Standard": there's no fully reliable
+   structural signal in reportbee's own tree for that (a short_name
+   convention like `"S1"`, `"S2"` looked like one at first but wasn't — a
+   Topic heading and the real standard beneath it can both match it), and
+   years without a ground-truth workbook have no standardized tree shape at
+   all to reason about live. Deciding which rows are real Standards is a
+   separate, offline step (see below) — working against a finished CSV
+   means iterating on that logic never needs reportbee or a browser.
+6. Node names come straight from the API's raw JSON, which can contain
    literal commas or embedded newlines (unlike the old scraper's truncated
    DOM text) — CSV fields are written with proper RFC4180 quoting to avoid
    silently corrupting rows.
-7. Writes one CSV per section to `data/<year>/<Grade>_<Section>.csv`, format
-   `Year,Class,Subject,Standard,S,P,M,E`.
+7. Writes one raw CSV per section to `data/<year>/<term>/<Grade>_<Section>.csv`,
+   format `Year,Class,Subject,Path,NodeName,Type,ShortName,S,P,M,E`.
 
 Each grade's actual section list (A–H, sometimes more) is **discovered live**
 from reportbee's own grade/section picker (`discoverSections`) rather than
 hand-maintained in config — different grades don't all have the same
 sections, and the school can add one (e.g. a grade gaining a section "I")
 without the config silently going stale.
+
+Then `filter_standards.py` (`src/filter/`) selects which rows are real
+Standards, writing `data/<year>/<term>/filtered/<Grade>_<Section>.csv` in the
+old `Year,Class,Subject,Standard,S,P,M,E` format:
+
+1. Resolves which reference JSON applies via `resolve_reference_filename()`:
+   an exact override if one exists (`reference/standards_2023_24.json` /
+   `standards_2025_26.json`), else a cutoff rule — years before 2024 use the
+   2023-24 ("old format") reference, 2024 onward reuse the 2025-26 ("new
+   format") one, since the school hasn't produced a fresh workbook every
+   year but the standards/format itself hasn't changed since 2025-26.
+2. A row is a Standard if its `NodeName` matches one of that grade+subject's
+   known standard texts — exact match first, then fuzzy (Levenshtein-style
+   ratio via `difflib`), since the source workbook and the live tree
+   occasionally have small genuine text drift (e.g. "घटनाक्रम" vs
+   "घटना-क्रम"), not just whitespace differences. Subject names also don't
+   always match between the two sources (`हिंदी` vs `Hindi`, `Math` vs
+   `Mathematics`, inconsistent SEL naming) — `resolve_subject()` bridges
+   these via substring containment plus a small alias table.
+3. A Standard's own "I can ..." student-facing restatements are close
+   paraphrases of their parent by design, so they can also cross the fuzzy
+   threshold and match the same reference text as their parent. Since the
+   raw dump preserves ancestry, `dedupe_ancestor_matches()` keeps only the
+   shallowest matching node per lineage — confirmed the deeper "I can ..."
+   node is always the false positive, never the reverse.
+4. If a subject has no reference coverage at all for its resolved year (e.g.
+   Socio-Emotional Learning in the 2023-24 workbook, which has no SEL
+   sheet), falls back to picking true leaves — rows with no deeper row
+   beneath them in the same file.
 
 Then `build_deck.py`:
 
@@ -97,87 +213,10 @@ Then `build_deck.py`:
    (`assets/deck_template/`) and injecting one divider slide per subject
    plus one chart slide per standard, then zips it into a real `.pptx`.
 
-## Setup
-
-**Node side** (extraction):
-```bash
-npm install
-```
-
-**Python side** (deck building):
-```bash
-pip install -r requirements.txt
-```
-
-**Chrome**, with remote debugging on a *separate* profile — reportbee's site
-silently ignores `--remote-debugging-port` on your normal default profile
-(a Chrome 136+ security change), so it needs its own profile directory:
-```bash
-osascript -e 'quit app "Google Chrome"'   # only if Chrome is already open
-open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"
-```
-Log into reportbee.com in that window and leave it open. Verify the debug
-port is live:
-```bash
-curl -s http://localhost:9222/json/version
-```
-
-## Usage
-
-Edit `config/batch.json` for the year, terms, and which grades to run — just
-a list of grade names, no per-grade section list to maintain:
-
-```json
-{
-  "year": "2025-26",
-  "terms": ["Term 2"],
-  "grades": ["VII", "VI", "V", "IV"]
-}
-```
-
-Then:
-
-```bash
-./run.sh VII
-```
-
-This discovers Grade VII's actual sections live, extracts every one, writes
-their CSVs to `data/2025_26/`, and builds
-`output/2025_26/Grade_7_Data_Analysis.pptx`.
-
-Pass `--skip-deck` to only run extraction (e.g. while iterating on the
-extractor itself):
-```bash
-./run.sh VII --skip-deck
-```
-
-To extract a single section manually (useful for debugging):
-```bash
-node src/extract/extract.js
-# then answer the prompts: Grade and Section, Year, Term, Patch subjects
-```
-
-To build a deck from CSVs that already exist in `data/`:
-```bash
-python3 src/deck/build_deck.py data/2025_26 "Grade 7"
-```
-
-## Project layout
-
-```
-config/batch.json       — grade/section/year/term list for a batch run
-assets/deck_template/   — blank deck skeleton (unpacked .pptx), permanent asset
-reference/build_reference.py     — parses the school's "ASSESSMENT TREES"
-                                    xlsx into a ground-truth standards list
-reference/standards_2025_26.json — that list; grade -> subject -> [standard text]
-src/extract/extract.js  — API-based extractor; exports extractSection() + a CLI
-src/batch.js            — loops extractSection() over a grade's sections, then
-                           calls build_deck.py
-src/deck/deck_lib.py    — chart rendering + slide XML assembly
-src/deck/build_deck.py  — reads data/<year>/*.csv, builds the .pptx
-data/<year>/            — extraction output (git-ignored)
-output/<year>/          — finished decks (git-ignored)
-```
+This project supersedes two older, separate, manual pipelines: **netbot**
+(scraped reportbee by clicking through every standard in the UI, ~7 seconds
+each) and **Term Data** (a second, manual deck-building step from netbot's
+CSVs). Quillsmith does both in one pipeline via direct API calls.
 
 ## Known constraints
 
@@ -194,11 +233,23 @@ output/<year>/          — finished decks (git-ignored)
   `.card-footer a.btn.gamma-btn` "View" button). If reportbee redesigns
   these pages, navigation will need updating even though the underlying API
   extraction wouldn't.
-- Only tested so far against Grades IV, V, VI, VII for the 2023-24 (verified
-  correct data) and 2025-26 (year-switching verified, full batch pending
-  re-verification after the year-switching fix) academic years.
-- `reference/standards_2025_26.json` is a **snapshot for one specific term's
-  workbook**. A new term/year needs a fresh xlsx from the school and a
-  re-run of `build_reference.py` against it — extraction still works without
-  it (falls back to the short_name heuristic, which is less reliable but not
-  broken), so this degrades gracefully rather than failing outright.
+- Only tested so far against Grades IV, V, VI, VII for the 2023-24 and
+  2025-26 academic years; the full raw-dump + filter pipeline has been
+  verified end-to-end (all sections, extract + filter + deck) for Grades
+  IV, V, VI, VII, 2023-24, Term 1.
+- Each `reference/standards_*.json` is a **snapshot of one specific
+  workbook**. Years before 2024 use the 2023-24 ("old format") reference by
+  default; 2024 onward reuse the 2025-26 ("new format") one — see
+  `resolve_reference_filename()` in `filter_standards.py`. If a year's real
+  standards actually diverge from what's already captured, a fresh xlsx (or
+  `reference/make_blank_template.py`'s blank template, filled in) plus a
+  `build_reference*.py` re-run is needed. Filtering still works without any
+  of this — a year label that doesn't parse at all falls back to
+  leaf-detection for every subject — so this degrades gracefully rather
+  than failing outright.
+- **2022-23 and earlier** had yet another, unexamined workbook layout
+  (separate per-grade files, e.g. `22_23_Grade 4.xlsx`) — the year-number
+  cutoff rule above would incorrectly route those years to the 2023-24
+  reference. Don't trust filtering results for 2022-23 or earlier without
+  first checking that workbook's actual shape and writing a dedicated
+  `build_reference_2022_23.py` if it differs.
