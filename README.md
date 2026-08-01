@@ -6,6 +6,15 @@ finished `.pptx`.
 
 ## Run this
 
+**No terminal, no typing commands?** After a one-time `npm install` and
+`pip install -r requirements.txt`, double-click `start-app.command`. It
+starts a local web UI at `http://localhost:4173` and opens it in your
+browser automatically — a form for Grade/Year/Term, a button to open Chrome
+for reportbee login, live progress, and buttons for each decision the
+wizard used to ask about (reference workbook, build the deck or not). Leave
+the terminal window it opens running in the background; closing it stops
+the app. See `src/server/index.js` for what it wraps.
+
 **Step 1 — Open reportbee in a debuggable Chrome.** reportbee's site
 silently ignores `--remote-debugging-port` on your normal default profile
 (a Chrome 136+ security change), so it needs its own profile directory:

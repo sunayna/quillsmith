@@ -811,7 +811,15 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  console.error(`❌ ${e.message}`);
-  process.exit(1);
-});
+module.exports = {
+  ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
+  readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
+  findDefaultTreeFile, SKIP_SUBJECTS: ['sel'],
+};
+
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(`❌ ${e.message}`);
+    process.exit(1);
+  });
+}

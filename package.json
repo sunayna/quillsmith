@@ -7,10 +7,13 @@
   "scripts": {
     "extract": "node src/extract/extract.js",
     "batch": "node src/batch.js",
+    "app": "node src/server/index.js",
     "test:python": "python3 -m pytest"
   },
   "license": "ISC",
   "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^2.0.0",
     "puppeteer": "^24.7.2"
   }
 }

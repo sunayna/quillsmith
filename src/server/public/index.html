@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quillsmith</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<main>
+  <h1>Quillsmith</h1>
+  <p class="subtitle">Pull marks from reportbee and build a Data Analysis deck.</p>
+
+  <section id="chrome-banner" class="card">
+    <div class="banner-row">
+      <span id="chrome-dot" class="dot"></span>
+      <span id="chrome-text">Checking Chrome connection…</span>
+      <div class="spacer"></div>
+      <button id="chrome-recheck" class="secondary">Check again</button>
+      <button id="chrome-open">Open Chrome for reportbee login</button>
+    </div>
+  </section>
+
+  <section id="tabs" class="card">
+    <div class="banner-row">
+      <button id="tab-analysis" class="tab-btn">Data Analysis</button>
+      <button id="tab-tree" class="tab-btn">Build Tree</button>
+    </div>
+  </section>
+
+  <section id="form-section" class="card">
+    <h2>Start a run</h2>
+    <div class="field-row">
+      <label>Grade
+        <select id="grade"></select>
+      </label>
+      <label>Year
+        <select id="year"></select>
+        <input id="year-custom" type="text" placeholder="e.g. 2026-27" class="hidden">
+      </label>
+      <label>Term
+        <select id="term"></select>
+        <input id="term-custom" type="text" placeholder="e.g. Term 3" class="hidden">
+      </label>
+    </div>
+    <button id="start-btn">Start data analysis</button>
+    <p id="form-error" class="error hidden"></p>
+  </section>
+
+  <section id="tree-form-section" class="card hidden">
+    <h2>Apply a tree workbook</h2>
+    <p class="subtitle">Parses a filled-in "ASSESSMENT TREES" workbook and writes the Topic/Standard/Assessment structure into reportbee's live Build Structure tree for a grade/section. This deletes and recreates existing nodes for each subject you apply — you'll review every subject's plan before anything is saved.</p>
+    <div class="field-row">
+      <label>Grade &amp; Section
+        <input id="tree-gradesection" type="text" placeholder="e.g. VII A">
+      </label>
+      <label>Term
+        <input id="tree-term" type="text" placeholder="e.g. Term 1">
+      </label>
+      <label>Academic Year
+        <input id="tree-year" type="text" placeholder="e.g. 2026-27">
+      </label>
+      <label>Plan type
+        <select id="tree-plantype">
+          <option value="Academic">Academic</option>
+          <option value="SEN">SEN</option>
+        </select>
+      </label>
+    </div>
+    <div class="field-row">
+      <label>Tree workbook (.xlsx)
+        <input id="tree-file" type="file" accept=".xlsx">
+      </label>
+      <label>Subject filter (optional)
+        <input id="tree-subject-filter" type="text" placeholder="blank = all subjects in the workbook">
+      </label>
+    </div>
+    <button id="tree-start-btn">Start tree apply</button>
+    <p id="tree-form-error" class="error hidden"></p>
+  </section>
+
+  <section id="tree-subject-section" class="card hidden">
+    <h2 id="tree-subject-heading">Review changes</h2>
+    <p id="tree-subject-meta" class="subtitle"></p>
+    <div id="tree-subject-plan"></div>
+    <button id="tree-apply-btn">Apply</button>
+    <button id="tree-skip-btn" class="secondary">Skip this subject</button>
+  </section>
+
+  <section id="log-section" class="card hidden">
+    <div class="banner-row">
+      <h2>Progress</h2>
+      <div class="spacer"></div>
+      <button id="stop-btn" class="secondary">Stop</button>
+    </div>
+    <pre id="log"></pre>
+  </section>
+
+  <section id="reference-section" class="card hidden">
+    <h2>No reference workbook for this year</h2>
+    <p>Filtering can fall back to the closest existing year, or you can provide the school's own standards workbook now.</p>
+    <div class="option-row">
+      <div class="option">
+        <h3>Upload a filled-in workbook</h3>
+        <input id="ref-file" type="file" accept=".xlsx">
+        <button id="ref-upload-btn">Build reference from file</button>
+      </div>
+      <div class="option">
+        <h3>Generate a blank template</h3>
+        <p>Hand this to the school to fill in, then upload it on a future run.</p>
+        <button id="ref-template-btn" class="secondary">Generate template</button>
+      </div>
+      <div class="option">
+        <h3>Skip for now</h3>
+        <p>Continue this run with the closest existing year's reference.</p>
+        <button id="ref-skip-btn" class="secondary">Continue with fallback</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="deck-section" class="card hidden">
+    <h2>Build the slide deck?</h2>
+    <div id="filtered-files"></div>
+    <button id="deck-build-btn">Build deck</button>
+    <button id="deck-skip-btn" class="secondary">Skip for now</button>
+  </section>
+
+  <section id="done-section" class="card hidden">
+    <h2 id="done-heading">Done</h2>
+    <div id="done-failures"></div>
+    <div id="done-outpath"></div>
+    <button id="run-again-btn">Run another</button>
+  </section>
+
+  <section id="error-section" class="card hidden">
+    <h2>Something went wrong</h2>
+    <p id="error-message"></p>
+    <button id="error-restart-btn">Start over</button>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
