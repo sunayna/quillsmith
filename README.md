@@ -81,6 +81,69 @@ python3 src/filter/filter_standards.py data/2023_24/Term_1 2023-24
 python3 src/deck/build_deck.py data/2023_24/Term_1/filtered "Grade 7"
 ```
 
+## Building or updating the exam-plan tree
+
+Quillsmith can also go the other direction: read the school's "ASSESSMENT
+TREES" xlsx workbook and use it to (re)build reportbee's live exam-plan tree
+— topics, standards, weightages, assessment splits, grading mode — via its
+write API. This exists because reportbee's own tree has no reliable way to
+identify "the Standard", and different years/subjects don't share a
+consistent structure, so there's no generic way to read the school's
+intended structure back out of reportbee itself; the xlsx is the actual
+source of truth.
+
+```bash
+node src/build_tree/apply_tree.js
+```
+Prompts for Grade & Section, the tree xlsx path (defaults to the newest
+file in `input/`), Subject (blank = every subject in that xlsx), Term,
+Academic Year, and Plan type (Academic/SEN). Only needs an authenticated
+reportbee session — it drives the Year → Term → Assessment → Subject
+navigation itself, so nothing needs pre-expanding in the browser first.
+
+**What it actually does, per subject, is wipe and rebuild — not a
+field-by-field diff:**
+1. `parse_tree_xlsx.py` parses the workbook into
+   `{topic_name: {weightage, mark_entry_mode, standards: [{name, weightage,
+   mark_entry_mode, assessments: [{name, weightage}]}]}}` for that
+   Grade+Subject (see below for the parsing rules).
+2. `apply_tree.js` reads the live tree down to each Topic and Standard node
+   (name, uuid, weight) via reportbee's read-only marks API — but **not**
+   down to individual FA/SA assessment nodes, since reading those has
+   proven unreliable (neither the API nor DOM expansion can discover them
+   past a Standard reliably; see the comment above `readLiveTree`).
+3. Every live Topic is queued for **deletion** — server-side cascade takes
+   the Standards and Assessments under it with it — except one standing,
+   non-curricular category (e.g. "Work Ethics"), detected via
+   `use_for_aggregation === false` rather than by name (its localized name
+   varies by language), which is preserved and just re-sorted to the end.
+4. Every Topic/Standard/Assessment in the parsed xlsx is then **created
+   fresh**, regardless of whether a live node of that name already existed
+   — there's no rename/reweight-in-place for existing nodes. New nodes are
+   built by cloning an existing sibling's full ~40-field record (so
+   `course_id`, `plan_id`, `grade_template_id`, and rounding rules are
+   guaranteed valid) and overriding only name/parent/order/weight/mode.
+5. The resulting delete+create batch is POSTed in one call to reportbee's
+   `save_structure_v2` endpoint. The full plan is printed either way — there
+   is no per-change confirmation prompt, since this is designed to run
+   against a whole subject unattended, not to be reviewed line by line.
+
+**This means every run destroys and recreates the whole subject's topic
+structure from the xlsx, with no check for whether a topic already has real
+marks entered against it** (see "Known constraints" below) — treat it as
+"make the tree match this xlsx from scratch", not as a safe incremental
+sync, and don't run it against a term where teachers have already started
+entering grades without checking first.
+
+```bash
+python3 src/build_tree/parse_tree_xlsx.py <xlsx_path> <Grade> [Subject]
+```
+runs just the parsing step on its own (prints the parsed JSON) — useful for
+checking what the workbook will actually produce before running it against
+the live tree. Its pytest suite (`npm run test:python`) covers the
+per-subject row-convention quirks and mode-inference rules this parser
+depends on.
+
 ## Project layout
 
 ```
@@ -108,6 +171,15 @@ src/wizard.js           — interactive version of the above; installs deps,
                            asks before building the deck
 src/deck/deck_lib.py    — chart rendering + slide XML assembly
 src/deck/build_deck.py  — reads data/<year>/<term>/filtered/*.csv, builds the .pptx
+src/build_tree/parse_tree_xlsx.py — parses the source "ASSESSMENT TREES" xlsx
+                                     into {subject: {topic_name: {...}}}
+src/build_tree/apply_tree.js    — wipes and rebuilds reportbee's live
+                                   exam-plan tree from the parsed xlsx via
+                                   its write API (see "Building or updating
+                                   the exam-plan tree" above)
+src/build_tree/tests/           — pytest suite for parse_tree_xlsx.py
+input/                          — source ASSESSMENT TREES xlsx workbooks
+                                   (git-ignored — proprietary school data)
 data/<year>/<term>/            — raw extraction output (git-ignored)
 data/<year>/<term>/filtered/   — filtered Standard rows (git-ignored)
 output/<year>/<term>/          — finished decks (git-ignored)
@@ -256,6 +328,19 @@ CSVs). Quillsmith does both in one pipeline via direct API calls.
   of this — a year label that doesn't parse at all falls back to
   leaf-detection for every subject — so this degrades gracefully rather
   than failing outright.
+- **The tree writer (`apply_tree.js`) is newer and less hardened** than the
+  extraction pipeline. Notably: every run unconditionally deletes and
+  recreates every non-standing topic in the subject (see "Building or
+  updating the exam-plan tree" above) with **no check for whether marks have
+  already been entered** against it — running this against a term that's
+  already in progress can destroy real grades. Also,
+  `switchGradeSection`'s plan-type-card matching can silently report success
+  even when navigation didn't actually happen. Always re-verify a run's
+  result against the live tree (e.g. re-fetch via `fetchNodeMarks`) rather
+  than trusting the printed plan alone.
+- `SKIP_SUBJECTS` in `apply_tree.js` currently hardcodes `sel` — its real
+  topic/standard content lives in a linked ReportPlan this script can't read
+  or write, so it's skipped entirely rather than silently wiping it.
 - **2022-23 and earlier** had yet another, unexamined workbook layout
   (separate per-grade files, e.g. `22_23_Grade 4.xlsx`) — the year-number
   cutoff rule above would incorrectly route those years to the 2023-24
