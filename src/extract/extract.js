@@ -557,21 +557,32 @@ async function switchYear(page, yearLabel) {
 }
 
 /**
- * Handles two different starting points: the normal exam-plan tree page
- * (has an "all standards" link that opens the grade/section picker popup),
- * and the select_class page landed on right after switchYear() runs (the
- * same grade/section picker, just already open with no popup to trigger).
+ * Confirmed live (2026-08) that clicking through the grade -> section
+ * picker no longer works: a.section-js links are href="#" with an
+ * accordion-style reveal that only responds to a genuinely trusted click —
+ * a script-dispatched click on the (possibly still-collapsed) anchor has
+ * no effect at all, so the automated grade/section clicks silently never
+ * navigated anywhere, and every run stalled on the picker page until the
+ * plan-card wait below timed out.
+ *
+ * Every a.section-js element carries the section's real data-sectionid in
+ * its dataset regardless of whether it's currently visible/expanded — this
+ * exists identically whether the picker is open or the sidebar is just
+ * sitting collapsed on an already-loaded exam plan page, since it's a
+ * persistent, always-in-DOM sidebar rather than something rendered fresh
+ * per page. Reading that id and navigating straight to
+ * /rb_records/exams?section_id=<id> reproduces exactly what a real
+ * section-letter click does (confirmed against a live network capture of
+ * a manual click), without depending on any click actually registering.
  *
  * planType selects which of the grade/section's exam-plan-type cards to
  * open (confirmed live: a single grade/section can have separate Academic /
  * Non-Academic / SEN plans, each with its own distinct plan_id) --
- * defaults to 'Academic' since every prior use of this function only ever
- * dealt with that one, by accident: clicking ".card-footer a.btn.gamma-btn"
- * with a bare querySelector() always grabbed whichever card's View button
- * happened to render first in the DOM (Academic), with no actual type
- * selection logic. Each card's real plan_id is embedded directly in its
- * own View link's href, so this navigates straight there via page.goto()
- * once the matching card is found, rather than clicking through it.
+ * defaults to 'Academic'. Each card's real plan_id is embedded directly in
+ * its own View link's href, so this navigates straight there via
+ * page.goto() once the matching card is found, rather than clicking
+ * through it -- confirmed this part of the flow still works exactly as
+ * written, once the picker is actually reached.
  *
  * NOTE: a tree-root-based year check was tried and removed here -- the
  * root node's own label (e.g. "2025 - 26") turned out to be a static field
@@ -596,48 +607,25 @@ async function switchGradeSection(page, grade, section, planType = 'Academic') {
     return expectedClass;
   }
 
-  const hasAllStandardsLink = await page.evaluate(() => !!document.querySelector('a.all-standards-link'));
-  if (hasAllStandardsLink) {
-    await page.evaluate(() => document.querySelector('a.all-standards-link')?.click());
-    await page.waitForSelector('#all-standards-list', { visible: true });
-    await delay(500);
+  const sectionId = await page.evaluate((grade, section) => {
+    const el = Array.from(document.querySelectorAll('a.section-js'))
+      .find((e) => (e.dataset.standardname || '').trim() === grade && (e.dataset.sectionname || '').trim() === section);
+    return el ? el.dataset.sectionid : null;
+  }, grade, section);
+  if (!sectionId) {
+    throw new Error(`Could not find a section_id for ${expectedClass} in the standards picker`);
   }
 
-  // A bare el.click() on the grade/section picker is unreliable on the
-  // FIRST navigation to a class this browser session hasn't opened yet --
-  // confirmed live: these links sit inside a carousel that renders them
-  // off-screen (negative x) until scrolled into position, and a synthetic
-  // .click() on an off-screen element silently no-ops instead of triggering
-  // the app's delegated handler. scrollIntoView + a full mouseover/down/up/
-  // click sequence (same fix already used for the node options popup below)
-  // makes it work on a genuinely fresh class, not just ones already opened
-  // manually once this session.
-  async function clickPickerLink(selector, matchFn) {
-    const handle = await page.evaluateHandle((selector, matchFnStr) => {
-      const matchFn = new Function('el', `return (${matchFnStr})(el)`);
-      return Array.from(document.querySelectorAll(selector)).find(matchFn);
-    }, selector, matchFn.toString());
-    const el = handle.asElement();
-    if (!el) return false;
-    await el.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'center' }));
-    await delay(200);
-    await el.evaluate(node => {
-      node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    return true;
-  }
+  // /rb_records/exams lives on the school's own portal subdomain, not on
+  // daffodils.reportbee.com (the shared records-app host the page may
+  // already be on from a prior section's extraction, where the school name
+  // is a path segment instead of the subdomain).
+  const currentUrl = new URL(page.url());
+  const schoolOrigin = currentUrl.hostname === 'daffodils.reportbee.com'
+    ? `https://${currentUrl.pathname.split('/').filter(Boolean)[0]}.reportbee.com`
+    : currentUrl.origin;
 
-  await clickPickerLink('a.standard-js', `(el) => el.dataset.standardname.trim() === ${JSON.stringify(grade)}`);
-  await delay(500);
-
-  await clickPickerLink(
-    'a.section-js',
-    `(el) => el.dataset.sectionname.trim() === ${JSON.stringify(section)} && el.dataset.standardname.trim() === ${JSON.stringify(grade)}`
-  );
-
+  await page.goto(`${schoolOrigin}/rb_records/exams?section_id=${sectionId}`, { waitUntil: 'networkidle2', timeout: 20000 });
   console.log(`✅ Selected ${expectedClass}`);
 
   try {
