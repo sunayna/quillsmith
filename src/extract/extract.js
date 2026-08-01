@@ -561,14 +561,37 @@ async function switchYear(page, yearLabel) {
  * (has an "all standards" link that opens the grade/section picker popup),
  * and the select_class page landed on right after switchYear() runs (the
  * same grade/section picker, just already open with no popup to trigger).
+ *
+ * planType selects which of the grade/section's exam-plan-type cards to
+ * open (confirmed live: a single grade/section can have separate Academic /
+ * Non-Academic / SEN plans, each with its own distinct plan_id) --
+ * defaults to 'Academic' since every prior use of this function only ever
+ * dealt with that one, by accident: clicking ".card-footer a.btn.gamma-btn"
+ * with a bare querySelector() always grabbed whichever card's View button
+ * happened to render first in the DOM (Academic), with no actual type
+ * selection logic. Each card's real plan_id is embedded directly in its
+ * own View link's href, so this navigates straight there via page.goto()
+ * once the matching card is found, rather than clicking through it.
+ *
+ * NOTE: a tree-root-based year check was tried and removed here -- the
+ * root node's own label (e.g. "2025 - 26") turned out to be a static field
+ * from whenever that exam plan record was originally created, not a live
+ * reflection of the active year context (confirmed: a known-good, already
+ * -verified-correct VI A/2026-27 plan shows this exact same "2025 - 26"
+ * label). switchYear()'s own header-based check is the only confirmed
+ * reliable year signal; nothing here re-verifies it.
  */
-async function switchGradeSection(page, grade, section) {
+async function switchGradeSection(page, grade, section, planType = 'Academic') {
   const currentClass = await page.evaluate(() =>
     document.querySelector('a.all-standards-link')?.textContent.trim() || ''
   );
   const expectedClass = `${grade} ${section}`;
 
-  if (currentClass === expectedClass) {
+  // The "already there" shortcut has no way to tell WHICH plan type the
+  // currently-loaded page is on (only the grade/section label is checked),
+  // so it's only trusted for the default Academic case -- anything else
+  // always re-navigates through the card picker to guarantee correctness.
+  if (currentClass === expectedClass && planType === 'Academic') {
     console.log(`✅ Already on ${expectedClass}`);
     return expectedClass;
   }
@@ -580,24 +603,59 @@ async function switchGradeSection(page, grade, section) {
     await delay(500);
   }
 
-  await page.evaluate((g) => {
-    Array.from(document.querySelectorAll('a.standard-js'))
-      .find(a => a.dataset.standardname.trim() === g)?.click();
-  }, grade);
+  // A bare el.click() on the grade/section picker is unreliable on the
+  // FIRST navigation to a class this browser session hasn't opened yet --
+  // confirmed live: these links sit inside a carousel that renders them
+  // off-screen (negative x) until scrolled into position, and a synthetic
+  // .click() on an off-screen element silently no-ops instead of triggering
+  // the app's delegated handler. scrollIntoView + a full mouseover/down/up/
+  // click sequence (same fix already used for the node options popup below)
+  // makes it work on a genuinely fresh class, not just ones already opened
+  // manually once this session.
+  async function clickPickerLink(selector, matchFn) {
+    const handle = await page.evaluateHandle((selector, matchFnStr) => {
+      const matchFn = new Function('el', `return (${matchFnStr})(el)`);
+      return Array.from(document.querySelectorAll(selector)).find(matchFn);
+    }, selector, matchFn.toString());
+    const el = handle.asElement();
+    if (!el) return false;
+    await el.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'center' }));
+    await delay(200);
+    await el.evaluate(node => {
+      node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    return true;
+  }
+
+  await clickPickerLink('a.standard-js', `(el) => el.dataset.standardname.trim() === ${JSON.stringify(grade)}`);
   await delay(500);
 
-  await page.evaluate(({ section, grade }) => {
-    Array.from(document.querySelectorAll('a.section-js'))
-      .find(a => a.dataset.sectionname.trim() === section && a.dataset.standardname.trim() === grade)?.click();
-  }, { section, grade });
+  await clickPickerLink(
+    'a.section-js',
+    `(el) => el.dataset.sectionname.trim() === ${JSON.stringify(section)} && el.dataset.standardname.trim() === ${JSON.stringify(grade)}`
+  );
 
   console.log(`✅ Selected ${expectedClass}`);
 
   try {
     await page.waitForSelector('.card-footer a.btn.gamma-btn', { visible: true, timeout: 8000 });
-    await page.evaluate(() => document.querySelector('.card-footer a.btn.gamma-btn')?.click());
+    const planUrl = await page.evaluate((planType) => {
+      for (const btn of document.querySelectorAll('.card-footer a.btn.gamma-btn')) {
+        const card = btn.closest('.card');
+        const heading = card && card.querySelector('h2, h3, h4, .title, [class*="title"], [class*="name"]');
+        if (heading && heading.textContent.trim() === planType && /\/exam_plans\/[^/]+\/build_structure/.test(btn.href)) {
+          return btn.href;
+        }
+      }
+      return null;
+    }, planType);
+    if (!planUrl) throw new Error(`No "${planType}" plan card found for ${expectedClass}`);
+    await page.goto(planUrl, { waitUntil: 'networkidle2', timeout: 15000 });
   } catch (e) {
-    console.warn('⚠️  View button not found, checking if already on exam plan...');
+    console.warn(`⚠️  Could not select "${planType}" plan card (${e.message}) -- checking if already on exam plan...`);
   }
 
   await Promise.race([
@@ -606,7 +664,7 @@ async function switchGradeSection(page, grade, section) {
   ]);
   await delay(1000);
 
-  console.log(`✅ Loaded exam plan for ${expectedClass}`);
+  console.log(`✅ Loaded ${planType} exam plan for ${expectedClass}`);
   await clickFirstAvailableNode(page);
   return expectedClass;
 }
@@ -761,7 +819,12 @@ async function runCli() {
   process.exit(0);
 }
 
-module.exports = { extractSection, connectToReportbeeTab, discoverSections };
+module.exports = {
+  extractSection, connectToReportbeeTab, discoverSections,
+  getPageContext, getCsrfToken, sampleAuthParams, findFullLabel,
+  switchGradeSection, switchYear, isExpandable, expandNode, fetchNodeMarks,
+  getChildrenFromData, delay,
+};
 
 if (require.main === module) {
   runCli().catch((e) => {

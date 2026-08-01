@@ -6,7 +6,8 @@
   "main": "src/batch.js",
   "scripts": {
     "extract": "node src/extract/extract.js",
-    "batch": "node src/batch.js"
+    "batch": "node src/batch.js",
+    "test:python": "python3 -m pytest"
   },
   "license": "ISC",
   "dependencies": {
