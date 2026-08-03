@@ -24,7 +24,17 @@ const PORT = process.env.PORT || 4173;
 const UPLOAD_DIR = path.join(ROOT, '.uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-const upload = multer({ dest: UPLOAD_DIR });
+// multer's default `dest:` storage names files with no extension (a bare
+// hash), which openpyxl then refuses to open ("does not support file
+// format") even though the content is a perfectly valid .xlsx — preserve
+// the original extension so downstream parsers can tell what they're
+// reading.
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname)}`),
+  }),
+});
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));

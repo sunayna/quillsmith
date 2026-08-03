@@ -607,11 +607,23 @@ async function switchGradeSection(page, grade, section, planType = 'Academic') {
     return expectedClass;
   }
 
-  const sectionId = await page.evaluate((grade, section) => {
+  // The section-js list can still be mid-render right after switchYear's
+  // navigation (confirmed live: the exact same grade/section is present a
+  // few seconds later with no other change) -- poll for it instead of
+  // trusting a single immediate query, the same render-race pattern seen
+  // elsewhere on this picker after a fresh navigation.
+  const findSectionId = (grade, section) => {
     const el = Array.from(document.querySelectorAll('a.section-js'))
       .find((e) => (e.dataset.standardname || '').trim() === grade && (e.dataset.sectionname || '').trim() === section);
     return el ? el.dataset.sectionid : null;
-  }, grade, section);
+  };
+  let sectionId = await page.evaluate(findSectionId, grade, section);
+  if (!sectionId) {
+    try {
+      await page.waitForFunction(findSectionId, { timeout: 8000 }, grade, section);
+      sectionId = await page.evaluate(findSectionId, grade, section);
+    } catch (e) { /* fall through to the error below */ }
+  }
   if (!sectionId) {
     throw new Error(`Could not find a section_id for ${expectedClass} in the standards picker`);
   }

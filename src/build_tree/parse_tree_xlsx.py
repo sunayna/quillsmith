@@ -148,22 +148,24 @@ def parse_subject_block(rows):
             # past 100%).
             marks_row = rows[i + 1] if i + 1 < len(rows) else None
 
-            # Assessment names live in columns B, C (up to 2 parallel assessments
-            # observed) on this row; their weightages come 2 rows down on the
-            # "Weightage Standard" row, same column positions.
+            # Assessment names, their "Marks" (out-of score), and their
+            # "Weightage Standard" all live in parallel columns starting at
+            # B, one column per assessment -- 2 columns (FA/SA) for
+            # English/Math, but confirmed up to 4 (SA1-SA4) in Expedition, so
+            # this walks however many columns are actually populated rather
+            # than assuming a fixed count.
             weight_row = rows[i + 2] if i + 2 < len(rows) else None
             weight_row_b = weight_row[1] if weight_row and len(weight_row) > 1 else None
 
             # The Marks row (one below Assessments, e.g. "Marks", 15, 15) is
             # the actual out-of score for each assessment -- same column
-            # alignment as the assessment names themselves (B/C). Read here
-            # so it can be carried through as each assessment's max_score;
+            # alignment as the assessment names themselves. Read here so it
+            # can be carried through as each assessment's max_score;
             # non-numeric placeholders (e.g. "EMPS") are left as None rather
             # than guessed at.
             marks = []
             if marks_row and MARKS_LABEL_RE.match(str(marks_row[0]).strip() if marks_row[0] is not None else ""):
-                marks = [marks_row[1] if len(marks_row) > 1 else None,
-                         marks_row[2] if len(marks_row) > 2 else None]
+                marks = list(marks_row[1:])
 
             text_pairs = TEXT_WEIGHT_PAIR_RE.findall(weight_row_b) if isinstance(weight_row_b, str) else []
             if text_pairs:
@@ -179,16 +181,21 @@ def parse_subject_block(rows):
                     # than guessing.
                     current_standard["assessments"].append({"name": name, "weightage": float(pct), "max_score": None, "mark_entry_mode": "score"})
             else:
-                names = [v.strip() for v in (b, c) if isinstance(v, str) and v.strip()]
                 weights = []
                 if weight_row:
                     wa = (str(weight_row[0]).strip() if weight_row[0] is not None else "")
                     if WEIGHTAGE_STD_LABEL_RE.match(wa):
-                        weights = [weight_row[1] if len(weight_row) > 1 else None,
-                                   weight_row[2] if len(weight_row) > 2 else None]
-                for idx, name in enumerate(names):
-                    w = weights[idx] if idx < len(weights) else None
-                    m = marks[idx] if idx < len(marks) else None
+                        weights = list(weight_row[1:])
+                # Column position (not post-filter index) keeps name/weight/
+                # mark aligned even if an earlier column is blank while a
+                # later one has a real assessment.
+                for col_idx in range(1, len(row)):
+                    name = row[col_idx]
+                    if not (isinstance(name, str) and name.strip()):
+                        continue
+                    name = name.strip()
+                    w = weights[col_idx - 1] if col_idx - 1 < len(weights) else None
+                    m = marks[col_idx - 1] if col_idx - 1 < len(marks) else None
                     current_standard["assessments"].append({
                         "name": name,
                         "weightage": float(w) if isinstance(w, (int, float)) else None,
@@ -268,8 +275,12 @@ def parse_workbook(xlsx_path, grade, subject_filter=None):
         raise SystemExit(f"Sheet {sheet_name!r} not found in {xlsx_path}")
     ws = wb[sheet_name]
 
+    # Column count varies by subject/sheet -- confirmed up to 26 columns in
+    # G7 (Expedition puts 4 parallel assessments in B-E alone). A fixed cap
+    # of 4 columns silently dropped anything past column D (e.g. Expedition's
+    # SA3/SA4), so read every column the sheet actually has.
     all_rows = [
-        tuple(ws.cell(row=r, column=c).value for c in range(1, 5))
+        tuple(ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1))
         for r in range(1, ws.max_row + 1)
     ]
 
