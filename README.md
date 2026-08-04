@@ -4,6 +4,13 @@ Extracts marks/grade data straight from reportbee's own API and builds a
 Data Analysis slide deck from it — one command per grade, from raw data to
 finished `.pptx`.
 
+**Requires a reportbee login for this school.** This isn't a general-purpose
+tool — it's built against The Heritage School Gurgaon's own
+`theheritageschoolggn.reportbee.com` tenant (URLs, DOM structure, and the
+exam-plan tree layout are all specific to it). Without login access to that
+account, none of this runs; you can still read the code, but there's nothing
+to point it at.
+
 ## Run this
 
 **No terminal, no typing commands?** After a one-time `npm install` and
