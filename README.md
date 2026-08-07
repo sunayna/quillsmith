@@ -254,6 +254,18 @@ to pure API calls:
    silently corrupting rows.
 7. Writes one raw CSV per section to `data/<year>/<term>/<Grade>_<Section>.csv`,
    format `Year,Class,Subject,Path,NodeName,Type,ShortName,S,P,M,E`.
+8. Not every subject actually grades on that S/P/M/E scale — confirmed live
+   that Socio-Emotional Learning's marks come back as `grade:"R"/"O"/"C"`
+   ("Rarely"/"Occasionally"/"Consistently") instead, which don't overlap with
+   S/P/M/E at all. A node's own grade values identify which scale it's on
+   (`detectScale` in extract.js); anything on a non-default scale (currently
+   just ROC) writes to its own companion file instead, e.g.
+   `VII_A_ROC.csv` with format `Year,Class,Subject,Path,NodeName,Type,
+   ShortName,R,O,C` — so its marks are captured correctly rather than
+   silently written as `S=0,P=0,M=0,E=0` (which is what happened before this
+   was recognized: not "no data", just S/P/M/E counting for grade codes it
+   never had). `filter_standards.py`/`build_deck.py` don't read the ROC file
+   yet — deck-building only covers the default S/P/M/E scale for now.
 
 Each grade's actual section list (A–H, sometimes more) is **discovered live**
 from reportbee's own grade/section picker (`discoverSections`) rather than

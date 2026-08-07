@@ -29,6 +29,28 @@
     </div>
   </section>
 
+  <section id="merge-existing-section" class="card">
+    <h2>Merge existing data</h2>
+    <p class="subtitle">Combine already-extracted CSVs for a Grade/Year/Term into one file, without running extraction again.</p>
+    <div class="field-row">
+      <label>Grade
+        <select id="merge-grade"></select>
+      </label>
+      <label>Year
+        <input id="merge-year" type="text" placeholder="e.g. 2025-26">
+      </label>
+      <label>Term
+        <input id="merge-term" type="text" placeholder="e.g. Term 2">
+      </label>
+    </div>
+    <div class="merge-row">
+      <button id="merge-existing-raw-btn" class="secondary">Merge raw CSVs</button>
+      <button id="merge-existing-filtered-btn" class="secondary">Merge filtered CSVs</button>
+    </div>
+    <div id="merge-existing-result"></div>
+    <p id="merge-existing-error" class="error hidden"></p>
+  </section>
+
   <section id="form-section" class="card">
     <h2>Start a run</h2>
     <div class="field-row">
@@ -42,6 +64,14 @@
       <label>Term
         <select id="term"></select>
         <input id="term-custom" type="text" placeholder="e.g. Term 3" class="hidden">
+      </label>
+    </div>
+    <div class="field-row">
+      <label>Section filter (optional)
+        <input id="section-filter" type="text" placeholder="blank = all sections, or e.g. A or A,B">
+      </label>
+      <label>Subject filter (optional)
+        <input id="subject-filter" type="text" placeholder="blank = all subjects, or e.g. Math or Math,Hindi">
       </label>
     </div>
     <button id="start-btn">Start data analysis</button>
@@ -124,6 +154,11 @@
     <div id="filtered-files"></div>
     <button id="deck-build-btn">Build deck</button>
     <button id="deck-skip-btn" class="secondary">Skip for now</button>
+    <div class="merge-row">
+      <button id="merge-raw-btn" class="secondary">Merge raw CSVs into one file</button>
+      <button id="merge-filtered-btn" class="secondary">Merge filtered CSVs into one file</button>
+    </div>
+    <div id="merged-files"></div>
   </section>
 
   <section id="done-section" class="card hidden">

@@ -54,8 +54,16 @@ function connectToJob(jobId) {
       appendLog(evt.line);
     } else if (evt.type === 'status') {
       handleStatus(evt.status, evt.data);
+    } else if (evt.type === 'merge-done') {
+      renderMergedFile(evt.which, evt.path);
     }
   };
+}
+
+function renderMergedFile(which, relPath) {
+  const label = which === 'raw' ? 'Raw' : 'Filtered';
+  const el = document.getElementById('merged-files');
+  el.innerHTML += `<p>${label} merge: <a href="${downloadUrl(relPath)}">${relPath}</a></p>`;
 }
 
 function downloadUrl(relPath) {
@@ -83,6 +91,13 @@ function handleStatus(status, data) {
     } else {
       filesEl.innerHTML = `<p>No filtered CSVs were produced — check the log above.</p>`;
     }
+    document.getElementById('merged-files').innerHTML = '';
+    // "Skip for now" already ends the run cleanly here, unlike
+    // awaiting-reference/awaiting-subject-decision which have no equivalent
+    // "end the whole run" option of their own -- Stop is redundant (and
+    // reads as if something's still actively running) once we're just
+    // waiting on this decision.
+    document.getElementById('stop-btn').disabled = true;
     show('log', 'deck');
   } else if (status === 'awaiting-subject-decision') {
     document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName}`;
@@ -261,12 +276,51 @@ async function loadConfig() {
 
   document.getElementById('tree-year').value = config.year || '';
   document.getElementById('tree-term').value = (config.terms && config.terms[0]) || '';
+
+  document.getElementById('merge-grade').innerHTML = gradeSelect.innerHTML;
+  document.getElementById('merge-year').value = config.year || '';
+  document.getElementById('merge-term').value = (config.terms && config.terms[0]) || '';
 }
+
+// ─── Merge existing data (standalone, no active job needed) ────────────────
+
+async function runStandaloneMerge(which) {
+  const grade = document.getElementById('merge-grade').value;
+  const year = document.getElementById('merge-year').value.trim();
+  const term = document.getElementById('merge-term').value.trim();
+  const errorEl = document.getElementById('merge-existing-error');
+  errorEl.classList.add('hidden');
+
+  if (!grade || !year || !term) {
+    errorEl.textContent = 'Grade, Year, and Term are all required.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  const res = await fetch('/api/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grade, year, term, which }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    errorEl.textContent = data.error || 'Merge failed';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+  const label = which === 'raw' ? 'Raw' : 'Filtered';
+  document.getElementById('merge-existing-result').innerHTML += `<p>${label} merge: <a href="${downloadUrl(data.path)}">${data.path}</a></p>`;
+}
+
+document.getElementById('merge-existing-raw-btn').onclick = () => runStandaloneMerge('raw');
+document.getElementById('merge-existing-filtered-btn').onclick = () => runStandaloneMerge('filtered');
 
 document.getElementById('start-btn').onclick = async () => {
   const grade = document.getElementById('grade').value;
   const year = selectedValue('year', 'year-custom');
   const term = selectedValue('term', 'term-custom');
+  const section = document.getElementById('section-filter').value.trim();
+  const subject = document.getElementById('subject-filter').value.trim();
   const errorEl = document.getElementById('form-error');
   errorEl.classList.add('hidden');
 
@@ -279,7 +333,7 @@ document.getElementById('start-btn').onclick = async () => {
   const res = await fetch('/api/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ grade, year, term }),
+    body: JSON.stringify({ grade, year, term, section, subject }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -403,6 +457,16 @@ document.getElementById('deck-skip-btn').onclick = async () => {
     body: JSON.stringify({ action: 'skip' }),
   });
 };
+
+function runJobMerge(which) {
+  return fetch(`/api/jobs/${currentJobId}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ which }),
+  });
+}
+document.getElementById('merge-raw-btn').onclick = () => runJobMerge('raw');
+document.getElementById('merge-filtered-btn').onclick = () => runJobMerge('filtered');
 
 document.getElementById('run-again-btn').onclick = () => {
   currentJobId = null;

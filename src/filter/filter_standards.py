@@ -193,7 +193,15 @@ def main():
         reference = {}
         print(f"⚠️  no reference workbook for year {year_label!r} — every subject falls back to leaf-detection")
 
-    files = sorted(f for f in os.listdir(raw_dir) if f.lower().endswith(".csv"))
+    # *_ROC.csv (Socio-Emotional Learning's R/O/C-graded rows, written by
+    # extract.js alongside the normal per-section file) uses a completely
+    # different column schema -- R/O/C instead of S/P/M/E. process_file()
+    # below reads r["S"] unconditionally, so a ROC file would crash with a
+    # KeyError rather than silently misbehave; exclude it here instead.
+    files = sorted(
+        f for f in os.listdir(raw_dir)
+        if f.lower().endswith(".csv") and not f.endswith("_ROC.csv")
+    )
     if not files:
         raise SystemExit(f"no CSV files found in {raw_dir}")
 

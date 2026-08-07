@@ -16,13 +16,27 @@ function romanToArabic(roman) {
   return ROMAN[roman] || roman;
 }
 
+// --section=A,B and --subject=Math,Hindi are both optional, comma-separated,
+// case-insensitive narrowing filters -- omit either to keep the previous
+// "every section, every subject" behavior. --subject reuses extractSection's
+// own patchSubjects (substring match against each subject's live name), the
+// same filter already exposed on the single-section CLI but never wired up
+// to the batch/all-sections path until now.
+function parseListFlag(name) {
+  const arg = process.argv.find((a) => a.startsWith(`--${name}=`));
+  if (!arg) return [];
+  return arg.slice(name.length + 3).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 async function main() {
   const grade = process.argv[2];
   if (!grade) {
-    console.error('usage: node src/batch.js <Grade Roman, e.g. VII> [--skip-deck]');
+    console.error('usage: node src/batch.js <Grade Roman, e.g. VII> [--skip-deck] [--section=A,B] [--subject=Math,Hindi]');
     process.exit(1);
   }
   const skipDeck = process.argv.includes('--skip-deck');
+  const sectionFilter = parseListFlag('section');
+  const subjectFilter = parseListFlag('subject');
 
   const config = loadConfig();
   if (!config.grades.includes(grade)) {
@@ -33,14 +47,26 @@ async function main() {
   const page = await connectToReportbeeTab();
 
   console.log(`🔎 Discovering sections for Grade ${grade}, Year ${config.year}...`);
-  const sections = await discoverSections(page, config.year, grade);
+  let sections = await discoverSections(page, config.year, grade);
   if (sections.length === 0) {
     console.error(`❌ No sections found for Grade ${grade} in Year ${config.year} — check the grade exists for that year`);
     process.exit(1);
   }
 
+  if (sectionFilter.length > 0) {
+    const wanted = new Set(sectionFilter.map((s) => s.toUpperCase()));
+    const missing = [...wanted].filter((s) => !sections.some((sec) => sec.toUpperCase() === s));
+    if (missing.length > 0) {
+      console.error(`❌ Section(s) not found for Grade ${grade}: ${missing.join(', ')} — available: ${sections.join(', ')}`);
+      process.exit(1);
+    }
+    sections = sections.filter((sec) => wanted.has(sec.toUpperCase()));
+  }
+
   console.log(`▶️  Batch: Grade ${grade}  |  Year: ${config.year}  |  Terms: ${config.terms.join(', ')}`);
-  console.log(`   Sections found: ${sections.join(', ')}\n`);
+  console.log(`   Sections: ${sections.join(', ')}${sectionFilter.length ? ' (filtered)' : ''}`);
+  if (subjectFilter.length > 0) console.log(`   Subjects: ${subjectFilter.join(', ')} (filtered)`);
+  console.log('');
 
   const yearFolder = config.year.replace(/-/g, '_');
   const gradeLabel = `Grade ${romanToArabic(grade)}`;
@@ -61,7 +87,7 @@ async function main() {
           gradeSection,
           yearLabel: config.year,
           termLabel: term,
-          patchSubjects: [],
+          patchSubjects: subjectFilter,
         });
       } catch (e) {
         console.error(`❌ Failed: ${gradeSection} | ${term} — ${e.message}`);

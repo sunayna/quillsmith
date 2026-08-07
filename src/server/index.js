@@ -160,11 +160,24 @@ async function runExtractionPipeline(job) {
       job.browser = page.browser();
 
       job.log(`Discovering sections for Grade ${job.grade}, Year ${job.year}...`);
-      const sections = await discoverSections(page, job.year, job.grade);
+      let sections = await discoverSections(page, job.year, job.grade);
       if (sections.length === 0) {
         throw new Error(`No sections found for Grade ${job.grade} in Year ${job.year}`);
       }
       job.log(`Sections found: ${sections.join(', ')}`);
+
+      if (job.sectionFilter && job.sectionFilter.length > 0) {
+        const wanted = new Set(job.sectionFilter.map((s) => s.toUpperCase()));
+        const missing = [...wanted].filter((s) => !sections.some((sec) => sec.toUpperCase() === s));
+        if (missing.length > 0) {
+          throw new Error(`Section(s) not found for Grade ${job.grade}: ${missing.join(', ')} — available: ${sections.join(', ')}`);
+        }
+        sections = sections.filter((sec) => wanted.has(sec.toUpperCase()));
+        job.log(`Sections filtered to: ${sections.join(', ')}`);
+      }
+      if (job.subjectFilter && job.subjectFilter.length > 0) {
+        job.log(`Subjects filtered to: ${job.subjectFilter.join(', ')}`);
+      }
 
       const yearFolder = job.year.replace(/-/g, '_');
       const termFolder = job.term.replace(/\s+/g, '_');
@@ -178,7 +191,7 @@ async function runExtractionPipeline(job) {
         const gradeSection = `${job.grade} ${section}`;
         job.log(`── ${gradeSection}  |  ${job.year}  |  ${job.term} ──`);
         try {
-          await extractSection(page, { gradeSection, yearLabel: job.year, termLabel: job.term, patchSubjects: [] });
+          await extractSection(page, { gradeSection, yearLabel: job.year, termLabel: job.term, patchSubjects: job.subjectFilter || [] });
         } catch (e) {
           job.log(`Failed: ${gradeSection} — ${e.message}`);
           job.failures.push({ gradeSection, error: e.message });
@@ -531,7 +544,7 @@ app.post('/api/run', (req, res) => {
   if (activeJob) {
     return res.status(409).json({ error: 'A run is already in progress', jobId: activeJob.id });
   }
-  const { grade, year, term } = req.body || {};
+  const { grade, year, term, section, subject } = req.body || {};
   if (!grade || !year || !term) {
     return res.status(400).json({ error: 'Grade, Year, and Term are all required' });
   }
@@ -540,6 +553,12 @@ app.post('/api/run', (req, res) => {
   job.grade = grade;
   job.year = year;
   job.term = term;
+  // Both optional, comma-separated -- blank means every section / every
+  // subject, same as before these existed. Subject reuses extractSection's
+  // own patchSubjects filter (substring match against each subject's live
+  // name).
+  job.sectionFilter = (section || '').split(',').map((s) => s.trim()).filter(Boolean);
+  job.subjectFilter = (subject || '').split(',').map((s) => s.trim()).filter(Boolean);
   activeJob = job;
   res.json({ jobId: job.id });
   runExtractionPipeline(job);
@@ -583,6 +602,75 @@ app.post('/api/jobs/:id/deck', (req, res) => {
     return;
   }
   buildDeckForJob(job).catch((e) => reportFailure(job, e));
+});
+
+// Shared by the job-based merge (deck-decision screen, right after a fresh
+// run) and the standalone one (merging data that already existed from an
+// earlier session, with no active job at all) -- both just need to know
+// which Grade/Year/Term/folder-kind to point merge_csv.py at.
+function mergePaths(grade, year, term, which) {
+  const yearFolder = year.replace(/-/g, '_');
+  const termFolder = term.replace(/\s+/g, '_');
+  const dataFolder = path.join('data', yearFolder, termFolder);
+  const folder = which === 'raw' ? dataFolder : path.join(dataFolder, 'filtered');
+  const outPath = path.join(ROOT, 'output', yearFolder, termFolder, `Grade_${romanToArabic(grade)}_${termFolder}_merged_${which}.csv`);
+  return { folder, outPath };
+}
+
+async function mergeCsvForJob(job, which) {
+  const { folder, outPath } = mergePaths(job.grade, job.year, job.term, which);
+  job.log(`Merging ${which} CSVs from ${folder} (Grade ${job.grade})...`);
+  await spawnStreaming(job, 'python3', [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, job.grade]);
+  const relOut = path.relative(ROOT, outPath);
+  job.data.mergedFiles = { ...(job.data.mergedFiles || {}), [which]: relOut };
+  job.emit({ type: 'merge-done', which, path: relOut });
+}
+
+// A side action available on the deck-decision screen, not a state
+// transition -- doesn't touch job.status, so it can run whether the next
+// click is "Build deck" or "Skip for now", and can be used for either/both
+// of raw and filtered independently.
+app.post('/api/jobs/:id/merge', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job.status !== 'awaiting-deck-decision') {
+    return res.status(409).json({ error: 'Job is not awaiting a deck decision' });
+  }
+  const { which } = req.body || {};
+  if (!['raw', 'filtered'].includes(which)) {
+    return res.status(400).json({ error: 'which must be "raw" or "filtered"' });
+  }
+  res.json({ ok: true });
+  mergeCsvForJob(job, which).catch((e) => job.log(`Merge failed: ${e.message}`));
+});
+
+// Standalone: merges CSVs already sitting on disk from an earlier run, with
+// no active job needed at all -- this is a pure local file operation, no
+// reportbee session required.
+app.post('/api/merge', async (req, res) => {
+  const { grade, year, term, which } = req.body || {};
+  if (!grade || !year || !term) {
+    return res.status(400).json({ error: 'Grade, Year, and Term are all required' });
+  }
+  if (!['raw', 'filtered'].includes(which)) {
+    return res.status(400).json({ error: 'which must be "raw" or "filtered"' });
+  }
+  const { folder, outPath } = mergePaths(grade, year, term, which);
+  if (!fs.existsSync(path.join(ROOT, folder))) {
+    return res.status(404).json({ error: `No ${which} data found at ${folder} -- run extraction for this Grade/Year/Term first` });
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn('python3', [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, grade], { cwd: ROOT });
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim() || `exited with code ${code}`))));
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ ok: true, path: path.relative(ROOT, outPath) });
 });
 
 app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {

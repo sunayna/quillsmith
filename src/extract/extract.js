@@ -316,16 +316,37 @@ function csvField(value) {
  * offline row-selection problem on a CSV instead — fast to iterate on, and
  * it doesn't need reportbee or a browser at all.
  */
-function writeRawRow(ctx, subject, ancestryPath, nodeInfo, marksForNode) {
-  const counts = { S: 0, P: 0, M: 0, E: 0 };
-  for (const studentId of Object.keys(marksForNode)) {
-    const grade = marksForNode[studentId].grade;
-    if (Object.prototype.hasOwnProperty.call(counts, grade)) counts[grade]++;
+// reportbee isn't on one universal grading scale -- confirmed live that
+// Socio-Emotional Learning's marks come back with grade:"R"/"O"/"C"
+// ("Rarely"/"Occasionally"/"Consistently"), not the S/P/M/E codes every
+// other subject uses. Those don't overlap, so a node's own grade values
+// identify which scale it's on. Getting this wrong used to be silent: the
+// old fixed S/P/M/E counter never recognized R/O/C, so every SEL row wrote
+// S=0,P=0,M=0,E=0 regardless of the real marks -- not "no data", just
+// dropped data that looked exactly like no data.
+const GRADE_SCALES = {
+  SPME: { codes: ['S', 'P', 'M', 'E'], suffix: '' },
+  ROC: { codes: ['R', 'O', 'C'], suffix: '_ROC' },
+};
+
+function detectScale(grades) {
+  for (const scale of Object.values(GRADE_SCALES)) {
+    if (grades.some((g) => scale.codes.includes(g))) return scale;
   }
+  return GRADE_SCALES.SPME; // no marks entered yet, or an unrecognized code -- same as before
+}
+
+function writeRawRow(ctx, subject, ancestryPath, nodeInfo, marksForNode) {
+  const grades = Object.keys(marksForNode).map((id) => marksForNode[id].grade);
+  const scale = detectScale(grades);
+  const counts = {};
+  for (const code of scale.codes) counts[code] = 0;
+  for (const g of grades) if (Object.prototype.hasOwnProperty.call(counts, g)) counts[g]++;
 
   const nodeName = (nodeInfo.name || '').trim();
   const pathStr = ancestryPath.join(' > ');
-  console.log(`🎯 [${pathStr}] ${nodeName} → S=${counts.S}, P=${counts.P}, M=${counts.M}, E=${counts.E}`);
+  const summary = scale.codes.map((c) => `${c}=${counts[c]}`).join(', ');
+  console.log(`🎯 [${pathStr}] ${nodeName} → ${summary}`);
 
   // A node with no course_paper ancestor (e.g. Socio-Emotional Learning,
   // which sits directly under the Term/Assessment grouping) has no real
@@ -334,13 +355,18 @@ function writeRawRow(ctx, subject, ancestryPath, nodeInfo, marksForNode) {
   const fields = [
     ctx.academicYear, ctx.classAndSection, subject || nodeName, pathStr, nodeName,
     nodeInfo.type || '', nodeInfo.short_name || nodeInfo.shortName || '',
-    counts.S, counts.P, counts.M, counts.E,
+    ...scale.codes.map((c) => counts[c]),
   ].map(csvField);
   const row = fields.join(',') + '\n';
-  const isNewFile = !fs.existsSync(ctx.csvFilePath);
+  // A non-default scale (currently just ROC) writes to its own file
+  // alongside the main one instead of forcing every subject onto the same
+  // fixed S/P/M/E columns -- filter_standards.py/build_deck.py keep reading
+  // the main file exactly as before, untouched by scales they don't handle.
+  const filePath = scale.suffix ? ctx.csvFilePath.replace(/\.csv$/, `${scale.suffix}.csv`) : ctx.csvFilePath;
+  const isNewFile = !fs.existsSync(filePath);
   fs.appendFileSync(
-    ctx.csvFilePath,
-    isNewFile ? 'Year,Class,Subject,Path,NodeName,Type,ShortName,S,P,M,E\n' + row : row,
+    filePath,
+    isNewFile ? `Year,Class,Subject,Path,NodeName,Type,ShortName,${scale.codes.join(',')}\n${row}` : row,
     'utf8'
   );
 }
@@ -691,9 +717,19 @@ async function extractSection(page, { gradeSection, yearLabel, termLabel, patchS
   fs.mkdirSync(dataDir, { recursive: true });
   const csvFilePath = path.join(dataDir, `${classAndSection.replace(/\s+/g, '_')}.csv`);
 
-  if (patchSubjects.length === 0 && fs.existsSync(csvFilePath)) {
-    fs.unlinkSync(csvFilePath);
-    console.log(`🗑️  Cleared ${path.basename(csvFilePath)}`);
+  if (patchSubjects.length === 0) {
+    // Clear the main file plus every per-scale companion (e.g. _ROC.csv) --
+    // otherwise a full re-run just appends duplicate rows onto whatever a
+    // previous run already wrote there.
+    const scaleFiles = [csvFilePath, ...Object.values(GRADE_SCALES)
+      .filter((s) => s.suffix)
+      .map((s) => csvFilePath.replace(/\.csv$/, `${s.suffix}.csv`))];
+    for (const f of scaleFiles) {
+      if (fs.existsSync(f)) {
+        fs.unlinkSync(f);
+        console.log(`🗑️  Cleared ${path.basename(f)}`);
+      }
+    }
   }
 
   console.log(`📅 Academic Year: ${academicYear}`);
@@ -823,7 +859,7 @@ module.exports = {
   extractSection, connectToReportbeeTab, discoverSections,
   getPageContext, getCsrfToken, sampleAuthParams, findFullLabel,
   switchGradeSection, switchYear, isExpandable, expandNode, fetchNodeMarks,
-  getChildrenFromData, delay,
+  getChildrenFromData, delay, detectScale, GRADE_SCALES,
 };
 
 if (require.main === module) {

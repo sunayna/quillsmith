@@ -157,16 +157,37 @@ async function main() {
     process.exit(1);
   }
 
+  // Both optional, comma-separated -- blank keeps the old "every section,
+  // every subject" behavior. Subject reuses extractSection's own
+  // patchSubjects filter (substring match against each subject's live name).
+  const sectionInput = (await prompt('📥 Section (blank = all)', '')).trim();
+  const sectionFilter = sectionInput ? sectionInput.split(',').map((s) => s.trim()).filter(Boolean) : [];
+  const subjectInput = (await prompt('📥 Subject (blank = all)', '')).trim();
+  const subjectFilter = subjectInput ? subjectInput.split(',').map((s) => s.trim()).filter(Boolean) : [];
+
   const page = await connectToReportbeeTab();
 
   console.log(`\n🔎 Discovering sections for Grade ${grade}, Year ${yearLabel}...`);
-  const sections = await discoverSections(page, yearLabel, grade);
+  let sections = await discoverSections(page, yearLabel, grade);
   if (sections.length === 0) {
     console.error(`❌ No sections found for Grade ${grade} in Year ${yearLabel}`);
     rl.close();
     process.exit(1);
   }
-  console.log(`   Sections found: ${sections.join(', ')}`);
+
+  if (sectionFilter.length > 0) {
+    const wanted = new Set(sectionFilter.map((s) => s.toUpperCase()));
+    const missing = [...wanted].filter((s) => !sections.some((sec) => sec.toUpperCase() === s));
+    if (missing.length > 0) {
+      console.error(`❌ Section(s) not found for Grade ${grade}: ${missing.join(', ')} — available: ${sections.join(', ')}`);
+      rl.close();
+      process.exit(1);
+    }
+    sections = sections.filter((sec) => wanted.has(sec.toUpperCase()));
+  }
+
+  console.log(`   Sections: ${sections.join(', ')}${sectionFilter.length ? ' (filtered)' : ''}`);
+  if (subjectFilter.length > 0) console.log(`   Subjects: ${subjectFilter.join(', ')} (filtered)`);
 
   const yearFolder = yearLabel.replace(/-/g, '_');
   const termFolder = termLabel.replace(/\s+/g, '_');
@@ -181,7 +202,7 @@ async function main() {
     console.log(`▶️  ${gradeSection}  |  ${yearLabel}  |  ${termLabel}`);
     console.log(`─────────────────────────────────────────────────────────────────`);
     try {
-      await extractSection(page, { gradeSection, yearLabel, termLabel, patchSubjects: [] });
+      await extractSection(page, { gradeSection, yearLabel, termLabel, patchSubjects: subjectFilter });
     } catch (e) {
       console.error(`❌ Failed: ${gradeSection} — ${e.message}`);
       failures.push({ gradeSection, error: e.message });
