@@ -27,6 +27,10 @@ function setTab(tab) {
   document.getElementById('tab-analysis').classList.toggle('active', tab === 'analysis');
   document.getElementById('tab-tree').classList.toggle('active', tab === 'tree');
   show(tab === 'tree' ? 'tree-form' : 'form');
+  // Not part of the show()-managed sections map -- it's a standalone
+  // utility available any time on the Data Analysis tab, independent of
+  // whatever state a run is in, not a step in either pipeline's flow.
+  document.getElementById('merge-existing-section').classList.toggle('hidden', tab !== 'analysis');
 }
 
 document.getElementById('tab-analysis').onclick = () => { if (!currentJobId) setTab('analysis'); };
@@ -60,8 +64,10 @@ function connectToJob(jobId) {
   };
 }
 
+const MERGE_LABELS = { raw: 'Raw', filtered: 'Filtered', sel: 'SEL' };
+
 function renderMergedFile(which, relPath) {
-  const label = which === 'raw' ? 'Raw' : 'Filtered';
+  const label = MERGE_LABELS[which] || which;
   const el = document.getElementById('merged-files');
   el.innerHTML += `<p>${label} merge: <a href="${downloadUrl(relPath)}">${relPath}</a></p>`;
 }
@@ -308,12 +314,48 @@ async function runStandaloneMerge(which) {
     errorEl.classList.remove('hidden');
     return;
   }
-  const label = which === 'raw' ? 'Raw' : 'Filtered';
+  const label = MERGE_LABELS[which] || which;
   document.getElementById('merge-existing-result').innerHTML += `<p>${label} merge: <a href="${downloadUrl(data.path)}">${data.path}</a></p>`;
 }
 
 document.getElementById('merge-existing-raw-btn').onclick = () => runStandaloneMerge('raw');
 document.getElementById('merge-existing-filtered-btn').onclick = () => runStandaloneMerge('filtered');
+document.getElementById('merge-existing-sel-btn').onclick = () => runStandaloneMerge('sel');
+
+document.getElementById('build-existing-deck-btn').onclick = async () => {
+  const grade = document.getElementById('merge-grade').value;
+  const year = document.getElementById('merge-year').value.trim();
+  const term = document.getElementById('merge-term').value.trim();
+  const errorEl = document.getElementById('merge-existing-error');
+  errorEl.classList.add('hidden');
+
+  if (!grade || !year || !term) {
+    errorEl.textContent = 'Grade, Year, and Term are all required.';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  const btn = document.getElementById('build-existing-deck-btn');
+  btn.disabled = true;
+  btn.textContent = 'Building deck…';
+  try {
+    const res = await fetch('/api/deck', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade, year, term }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errorEl.textContent = data.error || 'Deck build failed';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+    document.getElementById('merge-existing-result').innerHTML += `<p>Deck: <a href="${downloadUrl(data.path)}">${data.path}</a></p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Build deck';
+  }
+};
 
 document.getElementById('start-btn').onclick = async () => {
   const grade = document.getElementById('grade').value;
@@ -467,6 +509,7 @@ function runJobMerge(which) {
 }
 document.getElementById('merge-raw-btn').onclick = () => runJobMerge('raw');
 document.getElementById('merge-filtered-btn').onclick = () => runJobMerge('filtered');
+document.getElementById('merge-sel-btn').onclick = () => runJobMerge('sel');
 
 document.getElementById('run-again-btn').onclick = () => {
   currentJobId = null;

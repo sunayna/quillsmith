@@ -22,7 +22,7 @@ import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deck_lib import DECK_TEMPLATE, make_chart, assemble
+from deck_lib import DECK_TEMPLATE, make_chart, make_hbar_chart, assemble
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -159,16 +159,116 @@ def build_blocks(folder, filename_prefix=None):
             merged[canon].update(per_row_data[(subject, raw)])
 
         for canon in canonical_order:
-            blocks.append({"subject": subject, "title": canon, "classes": merged[canon]})
+            blocks.append({"subject": subject, "title": canon, "classes": merged[canon], "is_work_ethics": False})
 
         we_key = (subject, "__WORK_ETHICS__")
         if we_key in per_row_data:
             we_label = subject_work_ethics_label.get(subject, "Work Ethics")
             blocks.append(
-                {"subject": subject, "title": we_label, "classes": per_row_data[we_key]}
+                {"subject": subject, "title": we_label, "classes": per_row_data[we_key], "is_work_ethics": True}
             )
 
     return subject_order, blocks
+
+
+def sum_spme(counts_list):
+    total = {"S": 0, "P": 0, "M": 0, "E": 0}
+    for c in counts_list:
+        for k in total:
+            total[k] += c.get(k, 0)
+    return total
+
+
+def build_subject_grade_summary(blocks):
+    """{subject: {S,P,M,E}} -- every standard and every section summed, one
+    bar per subject. The grade-wide "how's each subject doing" dashboard."""
+    result = {}
+    for b in blocks:
+        result.setdefault(b["subject"], []).append(b["classes"].values())
+    return {subj: sum_spme([c for classes in lists for c in classes]) for subj, lists in result.items()}
+
+
+def build_subject_section_summary(blocks, subject):
+    """{section: {S,P,M,E}} for one subject -- every standard summed,
+    sections kept separate. Answers "which section is struggling" within
+    a subject, the way the per-standard charts already do per-standard."""
+    per_section = {}
+    for b in blocks:
+        if b["subject"] != subject:
+            continue
+        for section, counts in b["classes"].items():
+            per_section.setdefault(section, []).append(counts)
+    return {sec: sum_spme(counts) for sec, counts in per_section.items()}
+
+
+def build_subject_standard_summary(blocks, subject):
+    """({standard_title: {S,P,M,E}}, [title order]) for one subject -- every
+    section summed per standard. A one-chart overview of every standard in
+    a subject, before drilling into each standard's own per-section detail
+    (the existing per-block charts)."""
+    summary = {}
+    order = []
+    for b in blocks:
+        if b["subject"] != subject:
+            continue
+        summary[b["title"]] = sum_spme(b["classes"].values())
+        order.append(b["title"])
+    return summary, order
+
+
+def proficiency_pct(counts):
+    total = sum(counts.values())
+    return (counts["M"] + counts["E"]) / total * 100 if total else 0.0
+
+
+def sort_by_proficiency_desc(summary):
+    return sorted(summary.keys(), key=lambda k: -proficiency_pct(summary[k]))
+
+
+def subject_student_count(blocks, subject):
+    """Approximates a subject's student roster: for each section, take the
+    max total (S+P+M+E) seen across that subject's standards (tolerating a
+    few students missing marks on any single standard), then sum across
+    sections -- there's no per-student ID in this data, only per-node
+    counts, so this is the closest available proxy for a headcount."""
+    per_section_max = {}
+    for b in blocks:
+        if b["subject"] != subject:
+            continue
+        for section, counts in b["classes"].items():
+            total = sum(counts.values())
+            per_section_max[section] = max(per_section_max.get(section, 0), total)
+    return sum(per_section_max.values())
+
+
+def grade_wide_stats(blocks, subject_order):
+    """Grade-wide dashboard numbers: student roster, subject count, real
+    (non-Work-Ethics) standard count, and the S/P/M/E percentage split
+    across every mark in the grade. Roster size is the largest of any one
+    subject's own count (approximates the full non-elective grade roster --
+    confirmed against the reference template: its Grade-wide and
+    core-subject student counts were identical)."""
+    real_blocks = [b for b in blocks if not b.get("is_work_ethics")]
+    students = max((subject_student_count(blocks, s) for s in subject_order), default=0)
+    totals = sum_spme([c for b in blocks for c in b["classes"].values()])
+    total_marks = sum(totals.values())
+    pct = {k: (v / total_marks * 100 if total_marks else 0.0) for k, v in totals.items()}
+    return {"students": students, "subjects": len(subject_order), "standards": len(real_blocks), "pct": pct}
+
+
+def subject_stats(blocks, subject):
+    """Per-subject stat-slide numbers: students assessed, section count, and
+    real (non-Work-Ethics) standard count."""
+    subject_blocks = [b for b in blocks if b["subject"] == subject]
+    real_blocks = [b for b in subject_blocks if not b.get("is_work_ethics")]
+    sections = {sec for b in subject_blocks for sec in b["classes"]}
+    return {"students": subject_student_count(blocks, subject), "sections": len(sections), "standards": len(real_blocks)}
+
+
+def subject_mastery_pct(blocks, subject_order):
+    """{subject: M+E%}, for the "Average Mastery Rate by Subject" bar."""
+    summary = build_subject_grade_summary(blocks)
+    return {subj: proficiency_pct(summary[subj]) for subj in subject_order if subj in summary}
 
 
 def zip_pptx(unpacked_dir, out_path):
@@ -240,6 +340,41 @@ def main():
         make_chart(b["classes"], out_chart)
         b["chart_path"] = out_chart
 
+    print("=== rendering summary charts ===")
+    grade_summary = build_subject_grade_summary(blocks)
+    grade_chart_path = None
+    if grade_summary:
+        grade_order = sort_by_proficiency_desc(grade_summary)
+        grade_chart_path = os.path.join(chart_dir, "grade_summary.png")
+        make_chart(grade_summary, grade_chart_path, label_order=grade_order,
+                   xlabel="Subject", rotate_labels=20, label_maxlen=18, show_percent=True)
+
+    mastery_chart_path = None
+    if grade_summary:
+        mastery = subject_mastery_pct(blocks, subject_order)
+        mastery_chart_path = os.path.join(chart_dir, "mastery_by_subject.png")
+        make_hbar_chart(mastery, mastery_chart_path, xlabel="Average Mastery Rate (%)", label_maxlen=20)
+
+    grade_stats = grade_wide_stats(blocks, subject_order)
+    subject_stats_map = {subject: subject_stats(blocks, subject) for subject in subject_order}
+    period_label = f"Term {term_num} {session_label}".strip() if term_num else session_label
+
+    subject_section_chart = {}
+    subject_standard_chart = {}
+    for subject in subject_order:
+        section_summary = build_subject_section_summary(blocks, subject)
+        if section_summary:
+            p = os.path.join(chart_dir, f"section_summary_{norm(subject)}.png")
+            make_chart(section_summary, p, xlabel="Class and Section", show_percent=True)
+            subject_section_chart[subject] = p
+
+        standard_summary, standard_order = build_subject_standard_summary(blocks, subject)
+        if standard_summary:
+            p = os.path.join(chart_dir, f"standard_summary_{norm(subject)}.png")
+            make_chart(standard_summary, p, label_order=standard_order,
+                       xlabel="Standard", rotate_labels=20, label_maxlen=22, show_percent=True)
+            subject_standard_chart[subject] = p
+
     json.dump(
         {"subject_order": subject_order, "blocks": blocks},
         open(os.path.join(work_dir, "data.json"), "w"),
@@ -255,6 +390,13 @@ def main():
     assemble(
         unpacked, subject_order, blocks, grade_num,
         session_label=session_label, subtitle_label=subtitle_label,
+        grade_chart_path=grade_chart_path,
+        subject_section_chart=subject_section_chart,
+        subject_standard_chart=subject_standard_chart,
+        mastery_chart_path=mastery_chart_path,
+        grade_stats=grade_stats,
+        subject_stats_map=subject_stats_map,
+        period_label=period_label,
     )
 
     print("=== zipping into .pptx ===")

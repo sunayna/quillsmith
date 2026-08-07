@@ -37,7 +37,7 @@ const { execFileSync } = require('child_process');
 const {
   connectToReportbeeTab, getPageContext, getCsrfToken, sampleAuthParams,
   switchGradeSection, switchYear, fetchNodeMarks, findFullLabel,
-  isExpandable, expandNode, getChildrenFromData, delay,
+  isExpandable, expandNode, getChildrenFromData, delay, subjectMatches, SUBJECT_ALIASES,
 } = require('../extract/extract');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -72,26 +72,11 @@ function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, '');
 }
 
-// The xlsx's own subject header doesn't always match what the live tree
-// calls it (confirmed: xlsx says "SEL", live tree shows "Socio-Emotional
-// Learning") -- when the exact name isn't found live, try these instead.
-const SUBJECT_ALIASES = {
-  'sel': ['Socio-Emotional Learning', 'Social Emotional Learning', 'Social-Emotional Learning'],
-};
-
-// Even beyond the alias table, exact-match comparisons between an xlsx
-// subject header and the live tree's own label are unreliable on their
-// own -- confirmed live: Grade VI's own sheet literally says "Math", but
-// its live tree still shows "Mathematics" (Grade VII's sheet says
-// "Mathematics" and matches exactly) -- same abbreviation inconsistency
-// the Python parser already handles leniently for its own CLI-arg
-// matching (see parse_tree_xlsx.py's subject_filter). Substring
-// containment either direction covers both directly.
-function subjectNamesMatch(a, b) {
-  const na = normalize(a), nb = normalize(b);
-  if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
-}
+// Alias-aware subject-name comparison (xlsx header vs. reportbee's live
+// tree label -- e.g. "SEL" vs. "Social Emotional Learning") lives in
+// extract.js as subjectMatches, imported above -- extract.js's own
+// patchSubjects filter needs the exact same aliasing, so it's the shared
+// source of truth rather than a copy kept here too.
 
 // Labels long enough to wrap onto two lines in the tree's SVG boxes
 // (confirmed: "Socio-Emotional Learning") split across multiple <tspan>
@@ -228,7 +213,7 @@ async function navigateToSubject(page, termLabel, subjectName) {
 
   const termChildren = await getChildrenFromData(page, termDomLabel);
   for (const child of termChildren) {
-    if (candidates.some(name => subjectNamesMatch(child.name, name))) return child.name;
+    if (candidates.some(name => subjectMatches(child.name, name))) return child.name;
   }
 
   // Not directly under Term -- check inside each Assessment-level grouping.
@@ -239,7 +224,7 @@ async function navigateToSubject(page, termLabel, subjectName) {
     await ensureExpanded(page, assessmentDomLabel);
     const subChildren = await getChildrenFromData(page, assessmentDomLabel);
     for (const child of subChildren) {
-      if (candidates.some(name => subjectNamesMatch(child.name, name))) return child.name;
+      if (candidates.some(name => subjectMatches(child.name, name))) return child.name;
     }
   }
 

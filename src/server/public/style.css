@@ -127,13 +127,21 @@ button.secondary {
 button.tab-btn {
   background: transparent;
   color: var(--muted);
-  border: 1px solid transparent;
+  border: 1px solid var(--border);
+}
+button.tab-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+  opacity: 1;
 }
 button.tab-btn.active {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
   font-weight: 600;
+}
+button.tab-btn.active:hover {
+  background: var(--bg);
 }
 
 .error { color: var(--error); }

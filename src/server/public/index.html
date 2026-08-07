@@ -29,28 +29,6 @@
     </div>
   </section>
 
-  <section id="merge-existing-section" class="card">
-    <h2>Merge existing data</h2>
-    <p class="subtitle">Combine already-extracted CSVs for a Grade/Year/Term into one file, without running extraction again.</p>
-    <div class="field-row">
-      <label>Grade
-        <select id="merge-grade"></select>
-      </label>
-      <label>Year
-        <input id="merge-year" type="text" placeholder="e.g. 2025-26">
-      </label>
-      <label>Term
-        <input id="merge-term" type="text" placeholder="e.g. Term 2">
-      </label>
-    </div>
-    <div class="merge-row">
-      <button id="merge-existing-raw-btn" class="secondary">Merge raw CSVs</button>
-      <button id="merge-existing-filtered-btn" class="secondary">Merge filtered CSVs</button>
-    </div>
-    <div id="merge-existing-result"></div>
-    <p id="merge-existing-error" class="error hidden"></p>
-  </section>
-
   <section id="form-section" class="card">
     <h2>Start a run</h2>
     <div class="field-row">
@@ -157,6 +135,7 @@
     <div class="merge-row">
       <button id="merge-raw-btn" class="secondary">Merge raw CSVs into one file</button>
       <button id="merge-filtered-btn" class="secondary">Merge filtered CSVs into one file</button>
+      <button id="merge-sel-btn" class="secondary">Merge SEL CSVs into one file</button>
     </div>
     <div id="merged-files"></div>
   </section>
@@ -166,6 +145,30 @@
     <div id="done-failures"></div>
     <div id="done-outpath"></div>
     <button id="run-again-btn">Run another</button>
+  </section>
+
+  <section id="merge-existing-section" class="card hidden">
+    <h2>Merge existing data</h2>
+    <p class="subtitle">Combine already-extracted CSVs for a Grade/Year/Term into one file, without running extraction again.</p>
+    <div class="field-row">
+      <label>Grade
+        <select id="merge-grade"></select>
+      </label>
+      <label>Year
+        <input id="merge-year" type="text" placeholder="e.g. 2025-26">
+      </label>
+      <label>Term
+        <input id="merge-term" type="text" placeholder="e.g. Term 2">
+      </label>
+    </div>
+    <button id="build-existing-deck-btn">Build deck</button>
+    <div class="merge-row">
+      <button id="merge-existing-raw-btn" class="secondary">Merge raw CSVs</button>
+      <button id="merge-existing-filtered-btn" class="secondary">Merge filtered CSVs</button>
+      <button id="merge-existing-sel-btn" class="secondary">Merge SEL CSVs</button>
+    </div>
+    <div id="merge-existing-result"></div>
+    <p id="merge-existing-error" class="error hidden"></p>
   </section>
 
   <section id="error-section" class="card hidden">

@@ -12,6 +12,34 @@ function normalize(text) {
   return text.replace(/\s+/g, '').toLowerCase();
 }
 
+// A subject filter (typed by hand, or an xlsx's own header) doesn't always
+// share any substring with what reportbee's live tree actually calls that
+// subject -- confirmed live: "SEL" (how anyone would naturally type it, and
+// literally the xlsx's own header) shares zero characters in sequence with
+// "Social Emotional Learning"/"Socio-Emotional Learning" (the live tree's
+// name, which has varied by year), so plain substring matching silently
+// finds nothing. The single source of truth for this table -- apply_tree.js
+// imports subjectMatches from here rather than keeping its own copy, so an
+// alias only ever needs adding in one place.
+const SUBJECT_ALIASES = {
+  'sel': ['Socio-Emotional Learning', 'Social Emotional Learning', 'Social-Emotional Learning'],
+};
+
+function normalizeSubjectName(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, '');
+}
+
+function subjectMatches(liveName, filterText) {
+  const nLive = normalizeSubjectName(liveName);
+  const nFilter = normalizeSubjectName(filterText);
+  if (!nLive || !nFilter) return false;
+  if (nLive === nFilter || nLive.includes(nFilter) || nFilter.includes(nLive)) return true;
+  return (SUBJECT_ALIASES[nFilter] || []).some((alias) => {
+    const nAlias = normalizeSubjectName(alias);
+    return nLive === nAlias || nLive.includes(nAlias) || nAlias.includes(nLive);
+  });
+}
+
 async function readInputs() {
   const inputs = [];
   const rl = require('readline').createInterface({
@@ -418,7 +446,7 @@ async function collectAllNodes(page, authCtx, planId, nodeUuid, ancestryPath, ct
     if (childInfo.type === 'course_paper') {
       subject = childInfo.name;
       if (ctx.patchSubjects && ctx.patchSubjects.length > 0) {
-        const match = ctx.patchSubjects.some(s => normalize(subject).includes(normalize(s)));
+        const match = ctx.patchSubjects.some(s => subjectMatches(subject, s));
         if (!match) {
           console.log(`⏭️  Skipping subject: ${subject}`);
           continue;
@@ -489,7 +517,7 @@ async function expandAssessmentNode(page, authCtx, assessmentNode, ancestryPath,
     let subject = ctx.subject;
     if (child.type === 'course_paper') {
       if (ctx.patchSubjects && ctx.patchSubjects.length > 0) {
-        const match = ctx.patchSubjects.some(s => normalize(child.name).includes(normalize(s)));
+        const match = ctx.patchSubjects.some(s => subjectMatches(child.name, s));
         if (!match) {
           console.log(`⏭️  Skipping subject: ${child.name}`);
           continue;
@@ -860,6 +888,7 @@ module.exports = {
   getPageContext, getCsrfToken, sampleAuthParams, findFullLabel,
   switchGradeSection, switchYear, isExpandable, expandNode, fetchNodeMarks,
   getChildrenFromData, delay, detectScale, GRADE_SCALES,
+  subjectMatches, SUBJECT_ALIASES,
 };
 
 if (require.main === module) {
