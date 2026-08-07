@@ -22,7 +22,7 @@ import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deck_lib import DECK_TEMPLATE, make_chart, make_hbar_chart, assemble
+from deck_lib import DECK_TEMPLATE, make_chart, make_hbar_chart, make_donut_chart, assemble
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -359,9 +359,15 @@ def main():
     subject_stats_map = {subject: subject_stats(blocks, subject) for subject in subject_order}
     period_label = f"Term {term_num} {session_label}".strip() if term_num else session_label
 
+    subject_donut_chart = {}
     subject_section_chart = {}
     subject_standard_chart = {}
     for subject in subject_order:
+        if subject in grade_summary:
+            p = os.path.join(chart_dir, f"donut_{norm(subject)}.png")
+            make_donut_chart(grade_summary[subject], p)
+            subject_donut_chart[subject] = p
+
         section_summary = build_subject_section_summary(blocks, subject)
         if section_summary:
             p = os.path.join(chart_dir, f"section_summary_{norm(subject)}.png")
@@ -391,6 +397,8 @@ def main():
         unpacked, subject_order, blocks, grade_num,
         session_label=session_label, subtitle_label=subtitle_label,
         grade_chart_path=grade_chart_path,
+        subject_donut_chart=subject_donut_chart,
+        grade_summary=grade_summary,
         subject_section_chart=subject_section_chart,
         subject_standard_chart=subject_standard_chart,
         mastery_chart_path=mastery_chart_path,

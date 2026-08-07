@@ -481,15 +481,9 @@ document.getElementById('ref-skip-btn').onclick = async () => {
 };
 
 // ─── Deck decision ──────────────────────────────────────────────────────────
-
-document.getElementById('deck-build-btn').onclick = async () => {
-  show('log');
-  await fetch(`/api/jobs/${currentJobId}/deck`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'build' }),
-  });
-};
+// Fetching data only ever fetches data -- building a deck from the result is
+// a separate, deliberate step done via "Merge existing data" afterward. This
+// still hits the deck endpoint with action:'skip' to close out the job.
 
 document.getElementById('deck-skip-btn').onclick = async () => {
   show('log');

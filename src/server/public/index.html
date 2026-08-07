@@ -4,12 +4,29 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quillsmith</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230071e3'/%3E%3Cstop offset='1' stop-color='%237c5cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Ctext x='16' y='22' font-size='17' font-family='-apple-system,Helvetica,Arial,sans-serif' font-weight='700' fill='white' text-anchor='middle'%3EQ%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <main>
-  <h1>Quillsmith</h1>
+  <p class="eyebrow">Analytics &middot; Assessment Trees</p>
+  <div class="brand-row">
+    <svg class="brand-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="brandGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0071e3"/>
+          <stop offset="1" stop-color="#7c5cff"/>
+        </linearGradient>
+      </defs>
+      <path d="M20 11.5V19M20 19L8.5 23.5M20 19L20 27.5M20 19L31.5 23.5" stroke="url(#brandGrad)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="20" cy="8" r="3.6" fill="url(#brandGrad)"/>
+      <circle cx="8.5" cy="24.5" r="3.1" fill="url(#brandGrad)" opacity="0.85"/>
+      <circle cx="20" cy="31.5" r="3.1" fill="url(#brandGrad)" opacity="0.85"/>
+      <circle cx="31.5" cy="24.5" r="3.1" fill="url(#brandGrad)" opacity="0.85"/>
+    </svg>
+    <h1>Quillsmith</h1>
+  </div>
   <p class="subtitle">Pull marks from reportbee and build a Data Analysis deck.</p>
 
   <section id="chrome-banner" class="card">
@@ -52,7 +69,7 @@
         <input id="subject-filter" type="text" placeholder="blank = all subjects, or e.g. Math or Math,Hindi">
       </label>
     </div>
-    <button id="start-btn">Start data analysis</button>
+    <button id="start-btn" class="accent-violet">Fetch data</button>
     <p id="form-error" class="error hidden"></p>
   </section>
 
@@ -84,7 +101,7 @@
         <input id="tree-subject-filter" type="text" placeholder="blank = all subjects in the workbook">
       </label>
     </div>
-    <button id="tree-start-btn">Start tree apply</button>
+    <button id="tree-start-btn" class="accent-violet">Start tree apply</button>
     <p id="tree-form-error" class="error hidden"></p>
   </section>
 
@@ -92,7 +109,7 @@
     <h2 id="tree-subject-heading">Review changes</h2>
     <p id="tree-subject-meta" class="subtitle"></p>
     <div id="tree-subject-plan"></div>
-    <button id="tree-apply-btn">Apply</button>
+    <button id="tree-apply-btn" class="accent-violet">Apply</button>
     <button id="tree-skip-btn" class="secondary">Skip this subject</button>
   </section>
 
@@ -102,6 +119,7 @@
       <div class="spacer"></div>
       <button id="stop-btn" class="secondary">Stop</button>
     </div>
+    <div class="term-bar"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
     <pre id="log"></pre>
   </section>
 
@@ -112,7 +130,7 @@
       <div class="option">
         <h3>Upload a filled-in workbook</h3>
         <input id="ref-file" type="file" accept=".xlsx">
-        <button id="ref-upload-btn">Build reference from file</button>
+        <button id="ref-upload-btn" class="accent-amber">Build reference from file</button>
       </div>
       <div class="option">
         <h3>Generate a blank template</h3>
@@ -128,14 +146,13 @@
   </section>
 
   <section id="deck-section" class="card hidden">
-    <h2>Build the slide deck?</h2>
+    <h2>Data fetched</h2>
     <div id="filtered-files"></div>
-    <button id="deck-build-btn">Build deck</button>
-    <button id="deck-skip-btn" class="secondary">Skip for now</button>
+    <button id="deck-skip-btn" class="accent-teal">Finish</button>
     <div class="merge-row">
-      <button id="merge-raw-btn" class="secondary">Merge raw CSVs into one file</button>
-      <button id="merge-filtered-btn" class="secondary">Merge filtered CSVs into one file</button>
-      <button id="merge-sel-btn" class="secondary">Merge SEL CSVs into one file</button>
+      <button id="merge-raw-btn" class="secondary">Merge raw data</button>
+      <button id="merge-filtered-btn" class="secondary">Merge filtered data</button>
+      <button id="merge-sel-btn" class="secondary">Merge SEL data</button>
     </div>
     <div id="merged-files"></div>
   </section>
@@ -161,11 +178,11 @@
         <input id="merge-term" type="text" placeholder="e.g. Term 2">
       </label>
     </div>
-    <button id="build-existing-deck-btn">Build deck</button>
+    <button id="build-existing-deck-btn" class="accent-teal">Build deck</button>
     <div class="merge-row">
-      <button id="merge-existing-raw-btn" class="secondary">Merge raw CSVs</button>
-      <button id="merge-existing-filtered-btn" class="secondary">Merge filtered CSVs</button>
-      <button id="merge-existing-sel-btn" class="secondary">Merge SEL CSVs</button>
+      <button id="merge-existing-raw-btn" class="secondary">Merge raw data</button>
+      <button id="merge-existing-filtered-btn" class="secondary">Merge filtered data</button>
+      <button id="merge-existing-sel-btn" class="secondary">Merge SEL data</button>
     </div>
     <div id="merge-existing-result"></div>
     <p id="merge-existing-error" class="error hidden"></p>

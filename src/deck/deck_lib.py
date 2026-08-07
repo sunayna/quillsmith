@@ -167,6 +167,35 @@ def make_hbar_chart(values, out_path, xlabel="", label_maxlen=None):
     plt.close(fig)
 
 
+def make_donut_chart(counts, out_path):
+    """One subject's overall S/P/M/E split as a single donut -- an
+    aggregate distribution (every mark across every standard and section,
+    summed into one whole), unlike make_chart/make_hbar_chart which always
+    compare several labels side by side. Matches the reference template's
+    layout exactly: just the S/P/M/E letters on the wedges themselves (no
+    percentages here -- those live in the callout rows written_subject_
+    snapshot() builds beside this image) plus a small legend below."""
+    labels = [k for k in STACK_ORDER if counts.get(k, 0) > 0] or list(STACK_ORDER)
+    vals = [counts.get(k, 0) for k in labels]
+    colors = [COLORS[k] for k in labels]
+
+    fig, ax = plt.subplots(figsize=(4.6, 5.2), dpi=150)
+    ax.pie(
+        vals, colors=colors, labels=labels, labeldistance=0.79, startangle=90, counterclock=False,
+        wedgeprops=dict(width=0.42, edgecolor="white", linewidth=2),
+        textprops={"fontsize": 15, "color": "#1A1A1A", "fontweight": "bold"},
+    )
+    handles = [plt.Rectangle((0, 0), 1, 1, color=COLORS[k]) for k in LEGEND_ORDER]
+    ax.legend(
+        handles, LEGEND_ORDER, loc="upper center", bbox_to_anchor=(0.5, 0.06),
+        ncol=4, frameon=False, fontsize=13, handlelength=1.2, handleheight=1.2,
+    )
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    fig.savefig(out_path, transparent=True)
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Slide XML templates
 # ---------------------------------------------------------------------------
@@ -307,7 +336,11 @@ def fit_title(text, box_w_in):
     return int(sz_pt * 100), title_h_in
 
 
-def write_content(slide_path, title, chart_rel_target):
+def write_content(slide_path, title, chart_rel_target, chart_w_in=9.0, chart_h_in=4.2):
+    """chart_w_in/chart_h_in default to the wide aspect ratio make_chart/
+    make_hbar_chart render at -- a square chart (make_donut_chart) needs
+    its own box, or pic_xml's stretch-to-fill silently distorts it into an
+    ellipse rather than actually failing anything."""
     title_x = in_emu(0.5)
     title_y_in = 1.35
     title_y = in_emu(title_y_in)
@@ -316,11 +349,16 @@ def write_content(slide_path, title, chart_rel_target):
     title_w = in_emu(title_w_in)
     title_h = in_emu(title_h_in)
 
-    chart_w_in = 9.0
-    chart_h_in = 4.2
-    chart_x = in_emu((SLIDE_W_IN - chart_w_in) / 2)
     chart_y_in = title_y_in + title_h_in + 0.25
-    chart_h_in = min(chart_h_in, SLIDE_H_IN - 0.3 - chart_y_in)
+    available_h_in = SLIDE_H_IN - 0.3 - chart_y_in
+    if chart_h_in > available_h_in:
+        # Shrink both dimensions together so the aspect ratio (and
+        # therefore the image itself) isn't distorted -- clamping height
+        # alone stretched a square donut into an ellipse.
+        scale = available_h_in / chart_h_in
+        chart_h_in *= scale
+        chart_w_in *= scale
+    chart_x = in_emu((SLIDE_W_IN - chart_w_in) / 2)
     chart_y = in_emu(chart_y_in)
     chart_w = in_emu(chart_w_in)
     chart_h = in_emu(chart_h_in)
@@ -528,6 +566,45 @@ def write_subject_title(slide_path, subject, grade_num, period_label, stats):
     write_rels(slide_path, "slideLayout2.xml")
 
 
+def write_subject_snapshot(slide_path, subject, stats, counts, donut_chart_rel):
+    """Per-subject "grade-wide snapshot" -- the donut (just S/P/M/E letters
+    on the wedges, from make_donut_chart) on the left, and a column of
+    percentage callout rows on the right (colored bar + big % + band
+    description), matching the reference template's actual layout rather
+    than the generic title+image content slides everything else reuses."""
+    total = sum(counts.get(k, 0) for k in STACK_ORDER) or 1
+    shapes = []
+    shapes.append(shape_xml(2, "Label", 0.5, 0.35, LOGO_X_IN - 0.7, 0.3,
+        [para_xml([run_xml("DATA OVERVIEW", 11, bold=True, color="1C7293")])]))
+    shapes.append(shape_xml(3, "Title", 0.5, 0.65, LOGO_X_IN - 0.7, 0.5,
+        [para_xml([run_xml(f"{subject} grade-wide snapshot", 22, bold=True, color="1A1A1A")])]))
+    shapes.append(shape_xml(4, "Subtitle", 0.5, 1.2, 9.0, 0.35,
+        [para_xml([run_xml(f'{stats["students"]} students  •  {stats["standards"]} standards assessed', 13, color="6E6E73")])]))
+
+    donut_x, donut_y, donut_w, donut_h = 0.5, 1.75, 3.68, 4.16
+    shapes.append(pic_xml(5, "Donut", "rId3", donut_x, donut_y, donut_w, donut_h))
+    shapes.append(shape_xml(6, "DonutCaption", donut_x, donut_y + donut_h + 0.05, donut_w, 0.35,
+        [para_xml([run_xml("Grade-wide level distribution", 12, bold=True, color="1A1A1A")], align="ctr")]))
+
+    col_x, col_w = 4.6, 4.9
+    row_h = 1.15
+    row_y0 = 1.9
+    shape_id = 7
+    for code, (name, _rng, desc, color_hex) in zip(STACK_ORDER, PROFICIENCY_BANDS):
+        ry = row_y0 + STACK_ORDER.index(code) * row_h
+        pct = counts.get(code, 0) / total * 100
+        shapes.append(shape_xml(shape_id, "BandBar", col_x, ry, 0.1, 0.85, [], fill_hex=color_hex)); shape_id += 1
+        shapes.append(shape_xml(shape_id, "BandPct", col_x + 0.3, ry - 0.08, 1.8, 0.55,
+            [para_xml([run_xml(f"{pct:.1f}%", 26, bold=True, color="1A1A1A")])])); shape_id += 1
+        shapes.append(shape_xml(shape_id, "BandDesc", col_x + 0.3, ry + 0.5, col_w - 0.3, 0.55,
+            [para_xml([run_xml(f"{name} — {desc}", 12, color="4A4A4E")])])); shape_id += 1
+
+    shapes.append(pic_xml(shape_id, "Logo", "rId2", LOGO_X_IN, LOGO_Y_IN, LOGO_W_IN, LOGO_H_IN)); shape_id += 1
+
+    open(slide_path, "w").write(slide_doc("".join(shapes)))
+    write_rels(slide_path, "slideLayout2.xml", extra=image_rel_xml("rId3", donut_chart_rel))
+
+
 # Reference template's slide 8 content, copied as-is (per the brief: "you
 # can use the template instructions as is") -- only the data-owner line
 # substitutes the actual grade number in for its illustrative example.
@@ -652,10 +729,13 @@ def fix_title_slide(unpacked, grade_num, session_label, subtitle_label):
 
 
 def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle_label,
-             grade_chart_path=None, subject_section_chart=None, subject_standard_chart=None,
-             mastery_chart_path=None, grade_stats=None, subject_stats_map=None, period_label=""):
+             grade_chart_path=None, subject_donut_chart=None, subject_section_chart=None,
+             subject_standard_chart=None, mastery_chart_path=None, grade_stats=None,
+             subject_stats_map=None, period_label="", grade_summary=None):
+    subject_donut_chart = subject_donut_chart or {}
     subject_section_chart = subject_section_chart or {}
     subject_standard_chart = subject_standard_chart or {}
+    grade_summary = grade_summary or {}
     subject_stats_map = subject_stats_map or {}
 
     fix_title_slide(unpacked, grade_num, session_label, subtitle_label)
@@ -703,12 +783,13 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
         counters["rid"] += 1
         counters["sldid"] += 1
 
-    def add_content(title, chart_path):
+    def add_content(title, chart_path, chart_w_in=9.0, chart_h_in=4.2):
         import shutil
         chart_name = next_media_name(unpacked, "png")
         shutil.copy(chart_path, f"{unpacked}/ppt/media/{chart_name}")
         slide_name = f"slide{counters['num']}.xml"
-        write_content(f"{slides_dir}/{slide_name}", title, f"../media/{chart_name}")
+        write_content(f"{slides_dir}/{slide_name}", title, f"../media/{chart_name}",
+                      chart_w_in=chart_w_in, chart_h_in=chart_h_in)
         add_slide(slide_name)
         print("  content:", slide_name, title[:60])
 
@@ -729,6 +810,15 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
         add_slide(slide_name)
         print("  dashboard:", slide_name)
 
+    def add_snapshot(subject, stats, counts, donut_path):
+        import shutil
+        donut_name = next_media_name(unpacked, "png")
+        shutil.copy(donut_path, f"{unpacked}/ppt/media/{donut_name}")
+        slide_name = f"slide{counters['num']}.xml"
+        write_subject_snapshot(f"{slides_dir}/{slide_name}", subject, stats, counts, f"../media/{donut_name}")
+        add_slide(slide_name)
+        print("  snapshot:", slide_name, subject)
+
     add_static(write_how_to_use, label="How to use this deck")
 
     if grade_stats and mastery_chart_path and grade_chart_path:
@@ -744,6 +834,8 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
         stats = subject_stats_map.get(subject, {"students": 0, "sections": 0, "standards": len(subject_blocks)})
         add_static(write_subject_title, subject, grade_num, period_label, stats, label=subject)
 
+        if subject in subject_donut_chart:
+            add_snapshot(subject, stats, grade_summary.get(subject, {}), subject_donut_chart[subject])
         if subject in subject_section_chart:
             add_content(f"{subject} — Performance by Section", subject_section_chart[subject])
         if subject in subject_standard_chart:

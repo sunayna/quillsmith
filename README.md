@@ -16,11 +16,28 @@ to point it at.
 **No terminal, no typing commands?** After a one-time `npm install` and
 `pip install -r requirements.txt`, double-click `start-app.command`. It
 starts a local web UI at `http://localhost:4173` and opens it in your
-browser automatically — a form for Grade/Year/Term, a button to open Chrome
-for reportbee login, live progress, and buttons for each decision the
-wizard used to ask about (reference workbook, build the deck or not). Leave
-the terminal window it opens running in the background; closing it stops
-the app. See `src/server/index.js` for what it wraps.
+browser automatically. Leave the terminal window it opens running in the
+background while you use it; double-click `stop-app.command` (or close the
+window / Ctrl-C) to stop it — `start-app.command` also self-heals if a
+previous run was left running: it detects the stale process on the port and
+kills it before starting a fresh one, instead of crashing with `EADDRINUSE`.
+See `src/server/index.js` for what it wraps.
+
+The UI has two tabs:
+- **Data Analysis** — a form for Grade/Year/Term (plus optional Section and
+  Subject filters, e.g. only Section A or only Math+Hindi), a button to open
+  Chrome for reportbee login, and live progress. "Fetch data" only runs
+  extraction — it does **not** build a deck; once it finishes you get a
+  "Merge raw/filtered/SEL data" option and a "Finish" button. A separate
+  **Merge existing data** panel further down lets you point at any
+  Grade/Year/Term that's already been extracted (no new fetch, no active
+  job needed) and either merge its CSVs into one xlsx or build the deck from
+  its filtered CSVs — this is the only place a deck actually gets built from
+  the UI. See "Merging extracted data into one file" below for what the
+  merge itself does.
+- **Build Tree** — the xlsx-driven exam-plan tree writer (see "Building or
+  updating the exam-plan tree" below), with a per-subject review-before-apply
+  step in the browser instead of the terminal.
 
 **Step 1 — Open reportbee in a debuggable Chrome.** reportbee's site
 silently ignores `--remote-debugging-port` on your normal default profile
@@ -71,9 +88,12 @@ doesn't install dependencies for you — run `npm install` and
 `pip install -r requirements.txt` once first.)
 
 Pass `--skip-deck` to only run extraction (e.g. while iterating on the
-extractor itself):
+extractor itself), and/or `--section=`/`--subject=` (both comma-separated)
+to narrow a run to specific sections or subjects instead of every one
+reportbee has for that grade:
 ```bash
 ./run.sh VII --skip-deck
+./run.sh VII --section=A,B --subject=Math,Hindi
 ```
 
 To extract a single section manually (useful for debugging):
@@ -87,6 +107,23 @@ To filter and build a deck from raw CSVs that already exist in `data/`:
 python3 src/filter/filter_standards.py data/2023_24/Term_1 2023-24
 python3 src/deck/build_deck.py data/2023_24/Term_1/filtered "Grade 7"
 ```
+
+### Merging extracted data into one file
+
+Independent of building a deck, any folder of per-section CSVs (raw or
+filtered) can be combined into a single `.xlsx` — useful for handing off one
+file instead of one-per-section, or for opening the data directly:
+```bash
+python3 src/merge_csv.py data/2023_24/Term_1 out.xlsx VII
+python3 src/merge_csv.py data/2023_24/Term_1/filtered out.xlsx VII
+```
+The optional third argument (`VII` above) restricts the merge to that
+grade's files when a data folder holds more than one grade. Pass `_ROC` as a
+fourth argument to merge only the Socio-Emotional Learning companion files
+(`*_ROC.csv`, R/O/C scale) instead of the main S/P/M/E ones — see point 8
+under "How it works" below for why SEL is split out. The web UI's "Merge
+raw/filtered/SEL data" buttons (both right after a fresh extraction and in
+the standalone "Merge existing data" panel) call this same logic.
 
 ## Building or updating the exam-plan tree
 
@@ -178,6 +215,8 @@ src/wizard.js           — interactive version of the above; installs deps,
                            asks before building the deck
 src/deck/deck_lib.py    — chart rendering + slide XML assembly
 src/deck/build_deck.py  — reads data/<year>/<term>/filtered/*.csv, builds the .pptx
+src/merge_csv.py        — combines a folder of per-section CSVs (raw or
+                           filtered, main or SEL/ROC) into one .xlsx
 src/build_tree/parse_tree_xlsx.py — parses the source "ASSESSMENT TREES" xlsx
                                      into {subject: {topic_name: {...}}}
 src/build_tree/apply_tree.js    — wipes and rebuilds reportbee's live
@@ -185,6 +224,12 @@ src/build_tree/apply_tree.js    — wipes and rebuilds reportbee's live
                                    its write API (see "Building or updating
                                    the exam-plan tree" above)
 src/build_tree/tests/           — pytest suite for parse_tree_xlsx.py
+src/server/index.js     — Express server behind start-app.command: wraps
+                           extract/filter/deck/merge/tree-apply as HTTP
+                           endpoints + SSE job progress for the web UI
+src/server/public/      — the web UI itself (plain HTML/CSS/JS, no build step)
+start-app.command        — double-click entry point for the web UI
+stop-app.command         — double-click to stop whatever's running on its port
 input/                          — source ASSESSMENT TREES xlsx workbooks
                                    (git-ignored — proprietary school data)
 data/<year>/<term>/            — raw extraction output (git-ignored)
@@ -265,7 +310,10 @@ to pure API calls:
    silently written as `S=0,P=0,M=0,E=0` (which is what happened before this
    was recognized: not "no data", just S/P/M/E counting for grade codes it
    never had). `filter_standards.py`/`build_deck.py` don't read the ROC file
-   yet — deck-building only covers the default S/P/M/E scale for now.
+   at all — deck-building only covers the default S/P/M/E scale for now.
+   `merge_csv.py` can still merge the ROC files on their own into an xlsx
+   (see "Merging extracted data into one file" above) even though they never
+   feed the deck.
 
 Each grade's actual section list (A–H, sometimes more) is **discovered live**
 from reportbee's own grade/section picker (`discoverSections`) rather than
@@ -307,11 +355,29 @@ Then `build_deck.py`:
 1. Reads every section CSV for a grade, clusters near-duplicate standard
    titles (a safety net — matters less now that titles come from clean API
    JSON instead of truncated DOM text, but harmless to keep).
-2. Renders a stacked S/P/M/E bar chart per standard (`deck_lib.py`,
-   matplotlib) across all sections.
-3. Assembles a `.pptx` by copying the blank deck template
-   (`assets/deck_template/`) and injecting one divider slide per subject
-   plus one chart slide per standard, then zips it into a real `.pptx`.
+2. Aggregates grade-wide and per-subject stats (student counts, standard
+   counts, M+E% mastery rate, S/P/M/E distribution) straight from the
+   filtered CSVs — nothing here is hand-entered.
+3. Renders the charts (`deck_lib.py`, matplotlib): a stacked S/P/M/E bar per
+   standard and per section (as before), plus a grade-wide mastery-rate
+   horizontal bar and a per-subject S/P/M/E donut.
+4. Assembles a `.pptx` by copying the blank deck template
+   (`assets/deck_template/`) and injecting, in order:
+   - a static "How to use this deck" slide explaining the S/P/M/E bands
+   - a grade-wide Dashboard (stat cards + the two grade-wide charts)
+   - a grade-wide "Key Takeaways" placeholder (bracketed prompts, e.g.
+     `[Point 1]` — meant to be filled in by hand, not auto-generated)
+   - then, per subject: a title/stats slide, a grade-wide S/P/M/E donut
+     ("Grade-wide Snapshot"), "Performance by Section" and "Performance by
+     Standard" bar charts, one detail chart per standard, a per-subject
+     "Key Takeaways" placeholder, and an "Instructional Implications"
+     placeholder (fixed content, copied from the reference template)
+   before zipping the result into a real `.pptx`. All of this is built from
+   hand-rolled OOXML/DrawingML XML (see the `esc`/`run_xml`/`shape_xml`/
+   `pic_xml`/`slide_doc` helpers near the top of `deck_lib.py`) rather than
+   a Python pptx library, since the fixed template's placeholder slides
+   couldn't accommodate data-driven layouts like the stat-card dashboard or
+   the donut+callout snapshot slide.
 
 This project supersedes two older, separate, manual pipelines: **netbot**
 (scraped reportbee by clicking through every standard in the UI, ~7 seconds
