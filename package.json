@@ -8,7 +8,7 @@
     "extract": "node src/extract/extract.js",
     "batch": "node src/batch.js",
     "app": "node src/server/index.js",
-    "test:python": "python3 -m pytest"
+    "test:python": "node scripts/test-python.js"
   },
   "license": "ISC",
   "dependencies": {

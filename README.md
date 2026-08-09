@@ -13,22 +13,33 @@ to point it at.
 
 ## Run this
 
+Works the same on macOS, Windows, and Linux — every script below has both a
+`.command`/`.sh` (macOS/Linux) and a `.bat` (Windows) version. The only
+per-OS prerequisite is that "Python" means `python3` on macOS/Linux and
+`python` on Windows (the official Windows installer doesn't provide a
+`python3` alias); every script in this repo already accounts for that
+(`src/pythonCmd.js`) — it only matters if you're typing a `python...`
+command yourself, e.g. from "Filter and build a deck" below.
+
 **No terminal, no typing commands?** After a one-time `npm install` and
-`pip install -r requirements.txt`, double-click `start-app.command`. It
-starts a local web UI at `http://localhost:4173` and opens it in your
-browser automatically. Leave the terminal window it opens running in the
-background while you use it; double-click `stop-app.command` (or close the
-window / Ctrl-C) to stop it — `start-app.command` also self-heals if a
-previous run was left running: it detects the stale process on the port and
-kills it before starting a fresh one, instead of crashing with `EADDRINUSE`.
-See `src/server/index.js` for what it wraps.
+`pip install -r requirements.txt` (Windows: `pip install -r requirements.txt`
+still works — `pip` itself isn't renamed), double-click `start-app.command`
+(macOS/Linux) or `start-app.bat` (Windows). It starts a local web UI at
+`http://localhost:4173` and opens it in your browser automatically. Leave
+the terminal window it opens running in the background while you use it;
+double-click `stop-app.command`/`stop-app.bat` (or close the window /
+Ctrl-C) to stop it — starting also self-heals if a previous run was left
+running: it detects the stale process on the port and kills it before
+starting a fresh one, instead of crashing with `EADDRINUSE`. See
+`src/server/index.js` for what it wraps, and `scripts/portctl.js` for the
+cross-platform stale-port cleanup both the start and stop scripts share.
 
 The UI has two tabs:
 - **Data Analysis** — a form for Grade/Year/Term (plus optional Section and
   Subject filters, e.g. only Section A or only Math+Hindi), a button to open
   Chrome for reportbee login, and live progress. "Fetch data" only runs
-  extraction — it does **not** build a deck; once it finishes you get a
-  "Merge raw/filtered/SEL data" option and a "Finish" button. A separate
+  extraction — it does **not** build a deck; once it finishes you land on a
+  Done screen with "Merge raw/filtered/SEL data" buttons. A separate
   **Merge existing data** panel further down lets you point at any
   Grade/Year/Term that's already been extracted (no new fetch, no active
   job needed) and either merge its CSVs into one xlsx or build the deck from
@@ -41,20 +52,33 @@ The UI has two tabs:
 
 **Step 1 — Open reportbee in a debuggable Chrome.** reportbee's site
 silently ignores `--remote-debugging-port` on your normal default profile
-(a Chrome 136+ security change), so it needs its own profile directory:
+(a Chrome 136+ security change), so it needs its own profile directory.
+
+macOS:
 ```bash
 osascript -e 'quit app "Google Chrome"'   # only if Chrome is already open
 open -a "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile"
 ```
+Windows (Command Prompt):
+```bat
+taskkill /IM chrome.exe /F
+start chrome --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\chrome-debug-profile"
+```
+(the `taskkill` line is only needed if Chrome is already open — same as the
+`osascript` line above)
+
 Log into reportbee.com in that window and leave the tab open. Verify the
 debug port is live:
 ```bash
 curl -s http://localhost:9222/json/version
 ```
+(Windows without `curl` on PATH: open `http://localhost:9222/json/version`
+in any browser instead — it's a plain HTTP GET.)
 
 **Step 2 — Run the wizard:**
 ```bash
-./wizard.sh
+./wizard.sh        # macOS/Linux
+wizard.bat          # Windows
 ```
 It installs any missing `npm`/`pip` dependencies itself, then prompts for
 Grade / Year / Term, extracts every section reportbee has for that grade,
@@ -79,12 +103,13 @@ without answering prompts each time, edit `config/batch.json`:
 ```
 then:
 ```bash
-./run.sh VII
+./run.sh VII        # macOS/Linux
+run.bat VII          # Windows
 ```
 This discovers Grade VII's actual sections live, extracts every one, writes
 their CSVs to `data/2025_26/Term_2/`, and builds
-`output/2025_26/Term_2/Grade_7_Term_2_Data_Analysis.pptx`. (`./run.sh`
-doesn't install dependencies for you — run `npm install` and
+`output/2025_26/Term_2/Grade_7_Term_2_Data_Analysis.pptx`. (`run.sh`/`run.bat`
+don't install dependencies for you — run `npm install` and
 `pip install -r requirements.txt` once first.)
 
 Pass `--skip-deck` to only run extraction (e.g. while iterating on the
@@ -95,6 +120,7 @@ reportbee has for that grade:
 ./run.sh VII --skip-deck
 ./run.sh VII --section=A,B --subject=Math,Hindi
 ```
+(same flags on Windows: `run.bat VII --skip-deck`)
 
 To extract a single section manually (useful for debugging):
 ```bash
@@ -191,9 +217,15 @@ depends on.
 ## Project layout
 
 ```
-wizard.sh               — guided entry point: installs deps, prompts for
+wizard.sh, wizard.bat   — guided entry point: installs deps, prompts for
                            Grade/Year/Term, runs extract -> filter -> deck
-run.sh                  — scripted entry point: node src/batch.js <Grade>
+                           (.sh for macOS/Linux, .bat for Windows)
+run.sh, run.bat         — scripted entry point: node src/batch.js <Grade>
+src/pythonCmd.js        — the one place that picks "python3" vs "python"
+                           (macOS/Linux vs Windows) for every script below
+                           that shells out to a .py file
+scripts/portctl.js      — cross-platform "find/kill whatever's on this
+                           port", shared by start-app/stop-app on every OS
 config/batch.json       — grade/section/year/term list for a batch run
 assets/deck_template/   — blank deck skeleton (unpacked .pptx), permanent asset
 reference/build_reference.py          — parses the 2025-26 "ASSESSMENT TREES"
@@ -228,8 +260,9 @@ src/server/index.js     — Express server behind start-app.command: wraps
                            extract/filter/deck/merge/tree-apply as HTTP
                            endpoints + SSE job progress for the web UI
 src/server/public/      — the web UI itself (plain HTML/CSS/JS, no build step)
-start-app.command        — double-click entry point for the web UI
-stop-app.command         — double-click to stop whatever's running on its port
+start-app.command, start-app.bat — double-click entry point for the web UI
+stop-app.command, stop-app.bat   — double-click to stop whatever's running
+                                    on its port
 input/                          — source ASSESSMENT TREES xlsx workbooks
                                    (git-ignored — proprietary school data)
 data/<year>/<term>/            — raw extraction output (git-ignored)

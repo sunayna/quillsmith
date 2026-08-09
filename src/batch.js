@@ -1,6 +1,7 @@
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { extractSection, connectToReportbeeTab, discoverSections } = require('./extract/extract');
+const { PYTHON_CMD } = require('./pythonCmd');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -104,14 +105,14 @@ async function main() {
 
     console.log(`\n▶️  Filtering standards: ${gradeLabel}, ${term}`);
     execFileSync(
-      'python3',
+      PYTHON_CMD,
       [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), dataFolder, config.year],
       { cwd: ROOT, stdio: 'inherit' }
     );
 
     console.log(`\n▶️  Building deck: ${gradeLabel}, ${term}`);
     execFileSync(
-      'python3',
+      PYTHON_CMD,
       [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath],
       { cwd: ROOT, stdio: 'inherit' }
     );

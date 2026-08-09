@@ -34,6 +34,7 @@ const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
 const { execFileSync } = require('child_process');
+const { PYTHON_CMD } = require('../pythonCmd');
 const {
   connectToReportbeeTab, getPageContext, getCsrfToken, sampleAuthParams,
   switchGradeSection, switchYear, fetchNodeMarks, findFullLabel,
@@ -605,7 +606,7 @@ async function ensureYearRootLabel(page, ctx, yearLabel) {
 function parseTreeXlsx(xlsxPath, grade, subject) {
   const args = [path.join(__dirname, 'parse_tree_xlsx.py'), xlsxPath, grade];
   if (subject) args.push(subject);
-  const out = execFileSync('python3', args, { cwd: ROOT });
+  const out = execFileSync(PYTHON_CMD, args, { cwd: ROOT });
   return JSON.parse(out.toString());
 }
 

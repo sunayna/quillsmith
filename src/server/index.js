@@ -18,6 +18,7 @@ const {
   findFullLabel, delay,
 } = require('../extract/extract');
 const treeLib = require('../build_tree/apply_tree');
+const { PYTHON_CMD } = require('../pythonCmd');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PORT = process.env.PORT || 4173;
@@ -239,12 +240,12 @@ async function resolveReferenceForJob(job, action, file) {
 
   if (action === 'template') {
     job.log(`Generating a blank reference template for ${job.year}...`);
-    await spawnStreaming(job, 'python3', [path.join(ROOT, 'reference', 'make_blank_template.py'), job.year]);
+    await spawnStreaming(job, PYTHON_CMD, [path.join(ROOT, 'reference', 'make_blank_template.py'), job.year]);
     job.log('Template generated — fill it in with the school\'s real standards, then upload it here on a future run. Continuing this run with the fallback reference.');
   } else if (action === 'upload') {
     if (!file) throw new Error('No file was uploaded');
     job.log(`Building reference/standards_${yearFolder}.json from ${file.originalname}...`);
-    await spawnStreaming(job, 'python3', [path.join(ROOT, 'reference', 'build_reference.py'), file.path, refPath]);
+    await spawnStreaming(job, PYTHON_CMD, [path.join(ROOT, 'reference', 'build_reference.py'), file.path, refPath]);
     job.log(`Built reference/standards_${yearFolder}.json`);
     fs.unlink(file.path, () => {});
   } else {
@@ -258,7 +259,7 @@ async function runFilterStage(job) {
   try {
     if (job.cancelled) throw new Error('Cancelled');
     job.log('Filtering standards...');
-    await spawnStreaming(job, 'python3', [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), job.dataFolder, job.year]);
+    await spawnStreaming(job, PYTHON_CMD, [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), job.dataFolder, job.year]);
     job.log(`Filtered Standard CSVs written to ${job.filteredFolder}`);
     // Fetching data only ever fetches data -- there's no separate "build the
     // deck now?" decision step anymore, so this goes straight to 'done'.
@@ -508,9 +509,20 @@ app.get('/api/status', async (req, res) => {
 // version of this route did that) is both destructive to the user's other
 // tabs and racy, since the quit is async and the relaunch could fire before
 // it finishes. No need to touch the user's existing Chrome at all.
-const CHROME_BINARY_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-];
+//
+// Paths are OS-specific and, on Windows, also vary by install type (a
+// per-machine install lands under Program Files, a per-user install --
+// common when the installing account isn't an admin -- lands under
+// %LOCALAPPDATA% instead), so several candidates are checked per platform.
+const CHROME_BINARY_PATHS = {
+  darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+  win32: [
+    path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['LOCALAPPDATA'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+  ],
+  linux: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/google-chrome'],
+}[process.platform] || [];
 
 app.post('/api/open-chrome', async (req, res) => {
   // Launching the binary again while a debug-profile Chrome is already up
@@ -528,7 +540,7 @@ app.post('/api/open-chrome', async (req, res) => {
 
   const chromePath = CHROME_BINARY_PATHS.find((p) => fs.existsSync(p));
   if (!chromePath) {
-    return res.status(500).json({ error: 'Could not find Google Chrome in /Applications' });
+    return res.status(500).json({ error: 'Could not find a Google Chrome install in any of the usual places for this OS' });
   }
   try {
     const profileDir = path.join(os.homedir(), 'chrome-debug-profile');
@@ -617,7 +629,7 @@ function mergePaths(grade, year, term, which) {
 async function mergeCsvForJob(job, which) {
   const { folder, outPath, scaleSuffix } = mergePaths(job.grade, job.year, job.term, which);
   job.log(`Merging ${which} CSVs from ${folder} (Grade ${job.grade})...`);
-  await spawnStreaming(job, 'python3', [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, job.grade, scaleSuffix]);
+  await spawnStreaming(job, PYTHON_CMD, [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, job.grade, scaleSuffix]);
   const relOut = path.relative(ROOT, outPath);
   job.data.mergedFiles = { ...(job.data.mergedFiles || {}), [which]: relOut };
   job.emit({ type: 'merge-done', which, path: relOut });
@@ -657,7 +669,7 @@ app.post('/api/merge', async (req, res) => {
   }
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('python3', [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, grade, scaleSuffix], { cwd: ROOT });
+      const child = spawn(PYTHON_CMD, [path.join(ROOT, 'src', 'merge_csv.py'), folder, outPath, grade, scaleSuffix], { cwd: ROOT });
       let stderr = '';
       child.stderr.on('data', (d) => { stderr += d.toString(); });
       child.on('error', reject);
@@ -687,7 +699,7 @@ app.post('/api/deck', async (req, res) => {
   const outPath = path.join(ROOT, 'output', yearFolder, termFolder, `Grade_${romanToArabic(grade)}_${termFolder}_Data_Analysis.pptx`);
   try {
     await new Promise((resolve, reject) => {
-      const child = spawn('python3', [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath], { cwd: ROOT });
+      const child = spawn(PYTHON_CMD, [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath], { cwd: ROOT });
       let stderr = '';
       child.stderr.on('data', (d) => { stderr += d.toString(); });
       child.on('error', reject);
@@ -772,12 +784,23 @@ function resolveWithinRoot(target) {
   return resolved;
 }
 
+// Opens a file/URL with whatever the OS's default handler is -- macOS's
+// `open`, Windows' `start` (a cmd.exe builtin, not its own executable,
+// hence running it through cmd /c; the empty "" first argument is `start`'s
+// window-title slot, required whenever the target itself might contain
+// spaces or it gets misread as the title instead), Linux's `xdg-open`.
+function openWithDefaultApp(target) {
+  if (process.platform === 'darwin') execFileSync('open', [target]);
+  else if (process.platform === 'win32') execFileSync('cmd', ['/c', 'start', '""', target]);
+  else execFileSync('xdg-open', [target]);
+}
+
 app.post('/api/reveal', (req, res) => {
   const resolved = resolveWithinRoot(req.body && req.body.path);
   if (!resolved) return res.status(400).json({ error: 'invalid path' });
   if (!fs.existsSync(resolved)) return res.status(404).json({ error: 'not found' });
   try {
-    execFileSync('open', [resolved]);
+    openWithDefaultApp(resolved);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -796,9 +819,7 @@ app.get('/api/download', (req, res) => {
 app.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
   console.log(`Quillsmith is running at ${url}`);
-  if (process.platform === 'darwin') {
-    try {
-      execFileSync('open', [url]);
-    } catch (e) { /* not fatal — user can open the URL manually */ }
-  }
+  try {
+    openWithDefaultApp(url);
+  } catch (e) { /* not fatal — user can open the URL manually */ }
 });

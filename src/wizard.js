@@ -13,6 +13,7 @@ const path = require('path');
 const readline = require('readline');
 const { execFileSync } = require('child_process');
 const { extractSection, connectToReportbeeTab, discoverSections } = require('./extract/extract');
+const { PYTHON_CMD } = require('./pythonCmd');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -73,13 +74,13 @@ function ensureDependencies() {
 
   let pythonOk = true;
   try {
-    execFileSync('python3', ['-c', 'import matplotlib, openpyxl'], { cwd: ROOT, stdio: 'ignore' });
+    execFileSync(PYTHON_CMD, ['-c', 'import matplotlib, openpyxl'], { cwd: ROOT, stdio: 'ignore' });
   } catch (e) {
     pythonOk = false;
   }
   if (!pythonOk) {
     console.log('📦 Python dependencies missing — running pip install...');
-    execFileSync('python3', ['-m', 'pip', 'install', '-r', 'requirements.txt'], { cwd: ROOT, stdio: 'inherit' });
+    execFileSync(PYTHON_CMD, ['-m', 'pip', 'install', '-r', 'requirements.txt'], { cwd: ROOT, stdio: 'inherit' });
   }
 }
 
@@ -120,7 +121,7 @@ async function resolveReference(prompt, yearLabel) {
   if (!choice) return;
 
   if (choice.toLowerCase() === 'template') {
-    execFileSync('python3', [path.join(ROOT, 'reference', 'make_blank_template.py'), yearLabel], { cwd: ROOT, stdio: 'inherit' });
+    execFileSync(PYTHON_CMD, [path.join(ROOT, 'reference', 'make_blank_template.py'), yearLabel], { cwd: ROOT, stdio: 'inherit' });
     console.log(`   Fill that in with the school's real standards, then rerun the wizard and provide its path when asked.`);
     console.log(`   Continuing this run with the fallback reference.`);
     return;
@@ -132,7 +133,7 @@ async function resolveReference(prompt, yearLabel) {
     return;
   }
 
-  execFileSync('python3', [path.join(ROOT, 'reference', 'build_reference.py'), xlsxPath, refPath], { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(PYTHON_CMD, [path.join(ROOT, 'reference', 'build_reference.py'), xlsxPath, refPath], { cwd: ROOT, stdio: 'inherit' });
   console.log(`   ✅ Built reference/${refFilename} from ${xlsxPath}`);
 }
 
@@ -220,7 +221,7 @@ async function main() {
   await resolveReference(prompt, yearLabel);
 
   console.log(`\n▶️  Filtering standards...`);
-  execFileSync('python3', [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), dataFolder, yearLabel], { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(PYTHON_CMD, [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), dataFolder, yearLabel], { cwd: ROOT, stdio: 'inherit' });
   printFileList('Filtered Standard CSVs written to', filteredFolder);
 
   const buildDeck = (await prompt('\n📥 Build the PPT deck now? (Y/n)', 'Y')).trim().toLowerCase();
@@ -228,13 +229,13 @@ async function main() {
 
   if (buildDeck.startsWith('n')) {
     console.log(`\nSkipping deck build. Run this later when you're ready:`);
-    console.log(`   python3 src/deck/build_deck.py ${filteredFolder} "${gradeLabel}"`);
+    console.log(`   ${PYTHON_CMD} src/deck/build_deck.py ${filteredFolder} "${gradeLabel}"`);
     process.exit(failures.length > 0 ? 1 : 0);
   }
 
   const outPath = path.join(ROOT, 'output', yearFolder, termFolder, `Grade_${romanToArabic(grade)}_${termFolder}_Data_Analysis.pptx`);
   console.log(`\n▶️  Building deck: ${gradeLabel}, ${termLabel}`);
-  execFileSync('python3', [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath], { cwd: ROOT, stdio: 'inherit' });
+  execFileSync(PYTHON_CMD, [path.join(ROOT, 'src', 'deck', 'build_deck.py'), filteredFolder, gradeLabel, outPath], { cwd: ROOT, stdio: 'inherit' });
   console.log(`\n🎉 Deck built: ${outPath}`);
 
   process.exit(failures.length > 0 ? 1 : 0);
