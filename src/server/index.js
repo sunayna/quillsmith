@@ -260,7 +260,11 @@ async function runFilterStage(job) {
     job.log('Filtering standards...');
     await spawnStreaming(job, 'python3', [path.join(ROOT, 'src', 'filter', 'filter_standards.py'), job.dataFolder, job.year]);
     job.log(`Filtered Standard CSVs written to ${job.filteredFolder}`);
-    job.setStatus('awaiting-deck-decision', {
+    // Fetching data only ever fetches data -- there's no separate "build the
+    // deck now?" decision step anymore, so this goes straight to 'done'.
+    // Merging (and building a deck, via the standalone "Merge existing
+    // data" panel) stays available afterward using this same job's folders.
+    job.setStatus('done', {
       dataFolder: job.dataFolder,
       filteredFolder: job.filteredFolder,
       filteredFiles: listCsvFiles(job.filteredFolder),
@@ -269,16 +273,6 @@ async function runFilterStage(job) {
   } catch (e) {
     reportFailure(job, e);
   }
-}
-
-async function buildDeckForJob(job) {
-  const yearFolder = job.year.replace(/-/g, '_');
-  const termFolder = job.term.replace(/\s+/g, '_');
-  const outPath = path.join(ROOT, 'output', yearFolder, termFolder, `Grade_${romanToArabic(job.grade)}_${termFolder}_Data_Analysis.pptx`);
-  job.log(`Building deck: ${job.gradeLabel}, ${job.term}`);
-  await spawnStreaming(job, 'python3', [path.join(ROOT, 'src', 'deck', 'build_deck.py'), job.filteredFolder, job.gradeLabel, outPath]);
-  job.log(`Deck built: ${outPath}`);
-  job.setStatus('done', { outPath, failures: job.failures });
 }
 
 // ─── Tree apply (parse xlsx + write to the live reportbee tree) ────────────
@@ -601,26 +595,10 @@ app.post('/api/jobs/:id/reference', upload.single('xlsxFile'), (req, res) => {
   resolveReferenceForJob(job, req.body.action, req.file).catch((e) => reportFailure(job, e));
 });
 
-app.post('/api/jobs/:id/deck', (req, res) => {
-  const job = jobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (job.status !== 'awaiting-deck-decision') {
-    return res.status(409).json({ error: 'Job is not awaiting a deck decision' });
-  }
-  res.json({ ok: true });
-  if (req.body.action === 'skip') {
-    job.log('Skipping deck build. Run this later when ready:');
-    job.log(`python3 src/deck/build_deck.py ${job.filteredFolder} "${job.gradeLabel}"`);
-    job.setStatus('done', { failures: job.failures });
-    return;
-  }
-  buildDeckForJob(job).catch((e) => reportFailure(job, e));
-});
-
 const MERGE_KINDS = ['raw', 'filtered', 'sel'];
 
-// Shared by the job-based merge (deck-decision screen, right after a fresh
-// run) and the standalone one (merging data that already existed from an
+// Shared by the job-based merge (available on the Done screen right after a
+// fresh run) and the standalone one (merging data that already existed from an
 // earlier session, with no active job at all) -- both just need to know
 // which Grade/Year/Term/folder-kind to point merge_csv.py at. "sel" reads
 // from the same raw folder as "raw" (SEL/ROC data is never filtered --
@@ -645,15 +623,14 @@ async function mergeCsvForJob(job, which) {
   job.emit({ type: 'merge-done', which, path: relOut });
 }
 
-// A side action available on the deck-decision screen, not a state
-// transition -- doesn't touch job.status, so it can run whether the next
-// click is "Build deck" or "Skip for now", and independently of the other
-// merge kinds.
+// A side action available on the Done screen right after a fresh
+// extraction -- doesn't touch job.status, so it can run any number of times,
+// independently of the other merge kinds.
 app.post('/api/jobs/:id/merge', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (job.status !== 'awaiting-deck-decision') {
-    return res.status(409).json({ error: 'Job is not awaiting a deck decision' });
+  if (job.status !== 'done' || !job.filteredFolder) {
+    return res.status(409).json({ error: 'Job has not finished fetching data yet' });
   }
   const { which } = req.body || {};
   if (!MERGE_KINDS.includes(which)) {
@@ -782,7 +759,7 @@ app.post('/api/jobs/:id/stop', (req, res) => {
     return res.status(409).json({ error: 'Job has already finished' });
   }
   job.log('Stop requested — cancelling as soon as possible...');
-  const isPaused = ['awaiting-reference', 'awaiting-deck-decision', 'awaiting-subject-decision'].includes(job.status);
+  const isPaused = ['awaiting-reference', 'awaiting-subject-decision'].includes(job.status);
   job.cancel();
   if (isPaused) job.setStatus('stopped', {});
   res.json({ ok: true });

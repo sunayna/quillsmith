@@ -82,6 +82,15 @@ def make_chart(classes, out_path, label_order=None, xlabel="Class and Section",
     x = range(n)
     bottoms = [0] * n
 
+    # Known up front regardless of mode, so the label loop below can tell a
+    # thin segment from a normal one before ylim is actually set.
+    y_top = 100 * 1.06 if show_percent else max(max(bar_totals), 1) * 1.12
+    # A centered label needs roughly this much segment height (in y-axis
+    # units) to fit without spilling into its neighbors -- thinner than that
+    # and centering just crams the text against whatever's above/below it.
+    thin_cutoff = y_top * 0.055
+    top_key = STACK_ORDER[-1]
+
     for key in STACK_ORDER:
         raw_vals = [classes[cl][key] for cl in class_labels]
         if show_percent:
@@ -93,10 +102,21 @@ def make_chart(classes, out_path, label_order=None, xlabel="Class and Section",
             if raw_v == 0:
                 continue
             label = f"{v:.0f}%" if show_percent else str(raw_v)
-            ax.text(
-                i, b + v / 2, label, ha="center", va="center",
-                fontsize=11, color="#222222" if key in ("P", "M") else "white",
-            )
+            # The top segment of the stack has nothing above it but empty
+            # headroom, so when it's too thin to hold a centered label
+            # legibly, float the label just above the bar instead of
+            # cramming it inside -- that's the specific case that was
+            # reading as "cut off" against the top gridline.
+            if key == top_key and v < thin_cutoff:
+                ax.text(
+                    i, b + v + y_top * 0.012, label, ha="center", va="bottom",
+                    fontsize=10, color="#222222",
+                )
+            else:
+                ax.text(
+                    i, b + v / 2, label, ha="center", va="center",
+                    fontsize=11, color="#222222" if key in ("P", "M") else "white",
+                )
         bottoms = [b + v for b, v in zip(bottoms, plot_vals)]
 
     display_labels = [truncate_label(l, label_maxlen) for l in class_labels] if label_maxlen else class_labels
@@ -114,12 +134,9 @@ def make_chart(classes, out_path, label_order=None, xlabel="Class and Section",
     ax.yaxis.grid(True, color="#DDDDDD", linewidth=0.8)
     ax.set_axisbelow(True)
 
+    ax.set_ylim(0, y_top)
     if show_percent:
-        ax.set_ylim(0, 100 * 1.06)
         ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{int(y)}%"))
-    else:
-        max_total = max(bar_totals)
-        ax.set_ylim(0, max(max_total, 1) * 1.12)
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=COLORS[k]) for k in LEGEND_ORDER]
     ax.legend(
@@ -605,92 +622,88 @@ def write_subject_snapshot(slide_path, subject, stats, counts, donut_chart_rel):
     write_rels(slide_path, "slideLayout2.xml", extra=image_rel_xml("rId3", donut_chart_rel))
 
 
-# Reference template's slide 8 content, copied as-is (per the brief: "you
-# can use the template instructions as is") -- only the data-owner line
-# substitutes the actual grade number in for its illustrative example.
+# Template, not literal content -- bracketed placeholders for whoever owns
+# each subject's data to fill in. Row labels ("Level 2"/"High Level") and
+# the bullet grid's column count are fixed structure; the bracketed text is
+# what's meant to change per subject. Replaces an earlier version (a
+# 3-row table + progress-monitoring cadence + a narrow right sidebar) with
+# a wider 2-row table and a full-width bottom band, matching the layout the
+# school actually settled on after using this slide with real classes.
 GROUP_ROWS = [
-    ("Intensive", "[Students at Starting Out on 3+ skills], grouped by shared weakest skill", "4–5x / week"),
-    ("Targeted", "[Students Progressing on 2 skills], grouped by their specific skill pair", "2–3x / week"),
-    ("Enrichment", "[Students Exceeding / high Meeting], extension tasks", "1x / week"),
+    ("Level 2", "[Point 1]", "[Every week]"),
+    ("High Level", "[Point 2]", "[Every Term]"),
 ]
-LESSON_PLANNING_BULLETS = [
-    "[Embed one grade-wide mini-lesson per week on the priority gap skill for the next 4 weeks.]",
-    "[Use the class strength as a warm-up/scaffold before introducing harder content.]",
-    "[Standardize a shared sentence-frame or protocol across sections to close section-to-section gaps.]",
-    "[Re-run this assessment at the next checkpoint to measure movement.]",
+IMPLICATION_COLUMNS = [
+    ["[Point 1]", "[Point 2]"],
+    ["[Point 3]", "[Point 4]"],
+    ["[Point 5]"],
 ]
 
 
 def write_instructional_implications(slide_path, grade_num):
     """Per-subject placeholder, once after each subject's Key Takeaways --
-    a small-group table and progress-monitoring cadence on the left, a dark
-    "lesson-planning implications" sidebar on the right. Content copied
-    from the reference template's slide 8 as-is (bracketed placeholders)."""
+    a small-group table up top, a dark "lesson-planning implications" band
+    spanning the full width underneath with a 3-column bullet grid."""
     shapes = []
-    shapes.append(shape_xml(2, "Label", 0.5, 0.32, 5.8, 0.3,
+    shapes.append(shape_xml(2, "Label", 0.5, 0.32, LOGO_X_IN - 0.7, 0.3,
         [para_xml([run_xml("INSTRUCTIONAL IMPLICATIONS", 11, bold=True, color="1C7293")])]))
-    shapes.append(shape_xml(3, "Title", 0.5, 0.6, 5.8, 0.85,
+    shapes.append(shape_xml(3, "Title", 0.5, 0.6, LOGO_X_IN - 0.7, 0.85,
         [para_xml([run_xml("Turning this data into groups, lessons, and progress checks", 19, bold=True, color="1A1A1A")])]))
-    shapes.append(shape_xml(4, "Subtitle", 0.5, 1.5, 5.8, 0.45,
+    shapes.append(shape_xml(4, "Subtitle", 0.5, 1.5, 9.0, 0.45,
         [para_xml([run_xml("Translate the analysis above into concrete classroom moves for the next planning cycle.", 11, color="6E6E73")])]))
 
-    shapes.append(shape_xml(5, "TableHeaderLabel", 0.5, 2.05, 5.8, 0.3,
+    shapes.append(shape_xml(5, "TableHeaderLabel", 0.5, 2.05, 9.0, 0.3,
         [para_xml([run_xml("Suggested small-group structure", 13, bold=True, color="1A1A1A")])]))
 
     table_y = 2.4
-    col_x = [0.5, 1.75, 4.6]
-    col_w = [1.25, 2.85, 1.2]
-    row_h = 0.42
+    col_x = [0.5, 2.0, 7.6]
+    col_w = [1.5, 5.6, 1.9]
+    row_h = 0.5
     header_h = 0.35
     headers = ["Group", "Composition", "Frequency"]
     shape_id = 6
-    for c, (hx, hw, htext) in enumerate(zip(col_x, col_w, headers)):
+    for hx, hw, htext in zip(col_x, col_w, headers):
         shapes.append(shape_xml(shape_id, "TableHeaderCell", hx, table_y, hw, header_h,
             [para_xml([run_xml(htext, 11, bold=True, color="FFFFFF")])], fill_hex="2E3A4A")); shape_id += 1
     for r, (group, comp, freq) in enumerate(GROUP_ROWS):
         ry = table_y + header_h + r * row_h
         row_fill = "F7F7F9" if r % 2 else "FFFFFF"
-        for c, (cx, cw, text, bold) in enumerate([
+        for cx, cw, text, bold in [
             (col_x[0], col_w[0], group, True), (col_x[1], col_w[1], comp, False), (col_x[2], col_w[2], freq, False),
-        ]):
+        ]:
             shapes.append(shape_xml(shape_id, "TableCell", cx, ry, cw, row_h,
                 [para_xml([run_xml(text, 10, bold=bold, color="1A1A1A")])],
                 fill_hex=row_fill, anchor="ctr")); shape_id += 1
 
-    cadence_y = table_y + header_h + len(GROUP_ROWS) * row_h + 0.25
-    shapes.append(shape_xml(shape_id, "CadenceHeader", 0.5, cadence_y, 5.8, 0.3,
-        [para_xml([run_xml("Progress-monitoring cadence", 13, bold=True, color="1A1A1A")])])); shape_id += 1
-    cadence_lines = [
-        ("Intensive:", "[quick skill check every 2 weeks; move to Targeted after 2 consecutive on-target checks.]"),
-        ("Targeted:", "[skill check every 3–4 weeks; move to core once the flagged skill reaches Progressing or above.]"),
-    ]
-    cy = cadence_y + 0.4
-    for label, text in cadence_lines:
-        shapes.append(shape_xml(shape_id, "CadenceLine", 0.5, cy, 5.8, 0.55,
-            [para_xml([run_xml(f"{label}  ", 11, bold=True, color="1A1A1A"), run_xml(text, 11, color="4A4A4E")])])); shape_id += 1
-        cy += 0.55
-
-    # Sidebar -- starts below the logo's bottom edge (like the Dashboard
-    # slide's stat-card row) rather than skipping the logo entirely:
-    # slideLayout2.xml has its own background logo graphic baked in, which
-    # bleeds through unobstructed on any slide that doesn't draw its own
-    # logo pic over the same spot -- confirmed live, omitting it here left
-    # a fragmented leftover visible instead of a clean gap.
-    sb_x, sb_w = 6.6, 2.9
-    sb_y, sb_h = LOGO_Y_IN + LOGO_H_IN + 0.1, 5.85
-    shapes.append(shape_xml(shape_id, "Sidebar", sb_x, sb_y, sb_w, sb_h, [], fill_hex="2E3A4A", rounded=True)); shape_id += 1
-    shapes.append(shape_xml(shape_id, "SidebarHeader", sb_x + 0.3, sb_y + 0.28, sb_w - 0.6, 0.4,
+    # Full-width band -- starts below the logo's bottom edge (like the
+    # Dashboard slide's stat-card row) rather than skipping the logo
+    # entirely: slideLayout2.xml has its own background logo graphic baked
+    # in, which bleeds through unobstructed on any slide that doesn't draw
+    # its own logo pic over the same spot -- confirmed live, omitting it
+    # here left a fragmented leftover visible instead of a clean gap.
+    band_x, band_w = 0.5, 9.0
+    band_y = table_y + header_h + len(GROUP_ROWS) * row_h + 0.3
+    band_h = SLIDE_H_IN - 0.4 - band_y
+    shapes.append(shape_xml(shape_id, "Band", band_x, band_y, band_w, band_h, [], fill_hex="2E3A4A", rounded=True)); shape_id += 1
+    shapes.append(shape_xml(shape_id, "BandHeader", band_x + 0.35, band_y + 0.3, band_w - 0.7, 0.4,
         [para_xml([run_xml("LESSON-PLANNING IMPLICATIONS", 11, bold=True, color=SUBJECT_TITLE_ACCENT)])])); shape_id += 1
-    by = sb_y + 0.78
-    for bullet in LESSON_PLANNING_BULLETS:
-        shapes.append(shape_xml(shape_id, "SidebarBullet", sb_x + 0.3, by, sb_w - 0.6, 0.95,
-            [para_xml([run_xml(bullet, 11, color="E8ECF2")], bullet=True)])); shape_id += 1
-        by += 1.0
 
-    shapes.append(shape_xml(shape_id, "DataOwner", sb_x + 0.3, sb_y + sb_h - 0.75, sb_w - 0.6, 0.7, [
-        para_xml([run_xml("Data owner:  ", 10, bold=True, color=SUBJECT_TITLE_ACCENT),
-                  run_xml(f"[Role, e.g. Grade {grade_num} Subject Lead] compiles this analysis after each check-in for the Head of School.", 10, color="C8CFD9")]),
-    ])); shape_id += 1
+    col_gap = 0.3
+    inner_x, inner_w = band_x + 0.35, band_w - 0.7
+    bullet_col_w = (inner_w - 2 * col_gap) / 3
+    bullet_row_h = 0.9
+    for c, bullets in enumerate(IMPLICATION_COLUMNS):
+        bx = inner_x + c * (bullet_col_w + col_gap)
+        by = band_y + 0.85
+        for bullet in bullets:
+            shapes.append(shape_xml(shape_id, "BandBullet", bx, by, bullet_col_w, bullet_row_h,
+                [para_xml([run_xml(bullet, 11, color="E8ECF2")], bullet=True)])); shape_id += 1
+            by += bullet_row_h
+        if c == len(IMPLICATION_COLUMNS) - 1:
+            shapes.append(shape_xml(shape_id, "DataOwner", bx, band_y + band_h - 0.85, bullet_col_w, 0.75, [
+                para_xml([run_xml("Data owner:  ", 10, bold=True, color=SUBJECT_TITLE_ACCENT),
+                          run_xml(f"[Role, e.g. Grade {grade_num} Subject Lead] compiles this analysis after each check-in.", 10, color="C8CFD9")]),
+            ])); shape_id += 1
 
     shapes.append(pic_xml(shape_id, "Logo", "rId2", LOGO_X_IN, LOGO_Y_IN, LOGO_W_IN, LOGO_H_IN)); shape_id += 1
 

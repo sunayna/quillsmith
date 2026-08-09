@@ -4,7 +4,6 @@ const sections = {
   'tree-subject': document.getElementById('tree-subject-section'),
   log: document.getElementById('log-section'),
   reference: document.getElementById('reference-section'),
-  deck: document.getElementById('deck-section'),
   done: document.getElementById('done-section'),
   error: document.getElementById('error-section'),
 };
@@ -78,10 +77,12 @@ function downloadUrl(relPath) {
 
 function renderFileList(folder, files) {
   if (!files || !files.length) return '<p>(none)</p>';
-  return `<ul class="file-list">${files.map((f) => {
+  const count = `<p class="file-count">${files.length} file${files.length === 1 ? '' : 's'}</p>`;
+  const list = `<ul class="file-list">${files.map((f) => {
     const full = `${folder}/${f}`;
     return `<li><a href="${downloadUrl(full)}">${f}</a></li>`;
   }).join('')}</ul>`;
+  return count + list;
 }
 
 function handleStatus(status, data) {
@@ -89,22 +90,6 @@ function handleStatus(status, data) {
     show('log');
   } else if (status === 'awaiting-reference') {
     show('log', 'reference');
-  } else if (status === 'awaiting-deck-decision') {
-    const filesEl = document.getElementById('filtered-files');
-    if (data.filteredFiles && data.filteredFiles.length) {
-      filesEl.innerHTML = `<p>Filtered CSVs written to <code>${data.filteredFolder}</code>:</p>
-        ${renderFileList(data.filteredFolder, data.filteredFiles)}`;
-    } else {
-      filesEl.innerHTML = `<p>No filtered CSVs were produced — check the log above.</p>`;
-    }
-    document.getElementById('merged-files').innerHTML = '';
-    // "Skip for now" already ends the run cleanly here, unlike
-    // awaiting-reference/awaiting-subject-decision which have no equivalent
-    // "end the whole run" option of their own -- Stop is redundant (and
-    // reads as if something's still actively running) once we're just
-    // waiting on this decision.
-    document.getElementById('stop-btn').disabled = true;
-    show('log', 'deck');
   } else if (status === 'awaiting-subject-decision') {
     document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName}`;
     document.getElementById('tree-subject-meta').textContent =
@@ -129,6 +114,7 @@ function handleStatus(status, data) {
     document.getElementById('done-heading').textContent = 'Stopped';
     document.getElementById('done-failures').innerHTML = '<p>Run stopped before finishing.</p>';
     document.getElementById('done-outpath').innerHTML = '';
+    document.getElementById('done-merge-row').classList.add('hidden');
     show('log', 'done');
   } else if (status === 'error') {
     document.getElementById('stop-btn').disabled = true;
@@ -163,6 +149,9 @@ function renderDone(data) {
   if (data.outPath) {
     document.getElementById('open-deck-btn').onclick = () => reveal(data.outPath);
   }
+
+  document.getElementById('merged-files').innerHTML = '';
+  document.getElementById('done-merge-row').classList.toggle('hidden', !data.filteredFolder);
 }
 
 function renderPlanList(labels) {
@@ -180,6 +169,7 @@ function renderTreeDone(data) {
     failuresEl.innerHTML = '<p>No subjects were processed.</p>';
   }
   document.getElementById('done-outpath').innerHTML = '';
+  document.getElementById('done-merge-row').classList.add('hidden');
 }
 
 async function reveal(absPath) {
@@ -480,19 +470,7 @@ document.getElementById('ref-skip-btn').onclick = async () => {
   });
 };
 
-// ─── Deck decision ──────────────────────────────────────────────────────────
-// Fetching data only ever fetches data -- building a deck from the result is
-// a separate, deliberate step done via "Merge existing data" afterward. This
-// still hits the deck endpoint with action:'skip' to close out the job.
-
-document.getElementById('deck-skip-btn').onclick = async () => {
-  show('log');
-  await fetch(`/api/jobs/${currentJobId}/deck`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'skip' }),
-  });
-};
+// ─── Merge (available on the Done screen right after a fresh extraction) ───
 
 function runJobMerge(which) {
   return fetch(`/api/jobs/${currentJobId}/merge`, {

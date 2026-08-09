@@ -161,14 +161,12 @@ h2 {
   --card-accent: var(--accent2); --card-accent-rgb: var(--accent2-rgb);
 }
 #reference-section { --card-accent: var(--accent4); --card-accent-rgb: var(--accent4-rgb); }
-#deck-section, #merge-existing-section {
-  --card-accent: var(--accent3); --card-accent-rgb: var(--accent3-rgb);
-}
+#merge-existing-section { --card-accent: var(--accent3); --card-accent-rgb: var(--accent3-rgb); }
 #done-section { --card-accent: var(--ok); --card-accent-rgb: var(--ok-rgb); }
 #error-section { --card-accent: var(--error); --card-accent-rgb: var(--error-rgb); }
 
 #chrome-banner, #form-section, #tree-form-section, #tree-subject-section,
-#reference-section, #deck-section, #merge-existing-section, #done-section, #error-section {
+#reference-section, #merge-existing-section, #done-section, #error-section {
   border-left: 4px solid var(--card-accent);
   background: linear-gradient(135deg, rgba(var(--card-accent-rgb), 0.08), transparent 35%), var(--card);
 }
@@ -402,10 +400,20 @@ button.tab-btn.active:hover {
 
 ul.file-list {
   margin: 0.25rem 0 1rem;
-  padding-left: 1.2rem;
+  padding: 0.6rem 1rem 0.6rem 1.6rem;
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.7;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.file-count {
+  margin: 0.25rem 0;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 ul.file-list a { color: var(--accent); text-decoration: none; }
 ul.file-list a:hover { text-decoration: underline; }
