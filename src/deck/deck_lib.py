@@ -514,35 +514,190 @@ def write_dashboard(slide_path, grade_num, stats, mastery_chart_rel, spme_chart_
     write_rels(slide_path, "slideLayout2.xml", extra=extra)
 
 
-def write_key_takeaways(slide_path, top_header, bottom_header, n_items=3):
-    """Reusable placeholder slide -- once grade-wide ("Strong Subjects" /
+def generate_grade_takeaways(grade_summary, subject_order):
+    """Rule-based grade-wide Key Takeaways bullets -- ranks subjects by
+    their own M+E% (mastery rate), E% (exceeding rate), and S+P% (needs
+    support) and writes a fixed set of six insight categories from the
+    extremes, filling in the real computed numbers. Deterministic and
+    offline: the same input always produces the same six bullets. This is
+    intentionally *not* attempted per-subject (see write_key_takeaways) --
+    there's no numeric basis here for *why* a subject is strong or weak,
+    only for *which* subject is the outlier on which metric, which is as
+    far as a fixed rule can honestly go.
+
+    Returns (strong_bullets, support_bullets), each a list of up to 3
+    (bold_lead, rest) tuples in the shape write_key_takeaways expects.
+    """
+    pct = {}
+    for subj in subject_order:
+        counts = grade_summary.get(subj)
+        if not counts:
+            continue
+        total = sum(counts.values())
+        if not total:
+            continue
+        pct[subj] = {k: counts.get(k, 0) / total * 100 for k in ("S", "P", "M", "E")}
+
+    def me(subj):
+        return pct[subj]["M"] + pct[subj]["E"]
+
+    def sp(subj):
+        return pct[subj]["S"] + pct[subj]["P"]
+
+    subjects = list(pct.keys())
+    used = set()
+    strong, support = [], []
+
+    # Strong #1 -- highest raw Exceeding rate.
+    if subjects:
+        top_e = max(subjects, key=lambda s: pct[s]["E"])
+        used.add(top_e)
+        strong.append((
+            f"{top_e} Leading in Excellence: ",
+            f"{top_e} stands out with the highest level of mastery, where {pct[top_e]['E']:.2f}% "
+            f"of students are Exceeding expectations.",
+        ))
+
+    # Strong #2 -- highest M+E%, not already used.
+    remaining = [s for s in subjects if s not in used]
+    if remaining:
+        top_me = max(remaining, key=me)
+        used.add(top_me)
+        if me(top_me) >= 99.995:
+            strong.append((
+                f"Full Proficiency in {top_me}: ",
+                f"{top_me} achieved a {me(top_me):.2f}% success rate in meeting or exceeding "
+                f"expectations, with {pct[top_me]['M']:.2f}% of students meeting expectations.",
+            ))
+        else:
+            strong.append((
+                f"Strong Performance in {top_me}: ",
+                f"{top_me} leads the remaining subjects with {me(top_me):.2f}% of students "
+                f"meeting or exceeding expectations.",
+            ))
+
+    # Strong #3 -- next two highest M+E%, paired.
+    remaining = sorted([s for s in subjects if s not in used], key=me, reverse=True)
+    pair = remaining[:2]
+    used.update(pair)
+    if len(pair) == 2:
+        a, b = pair
+        strong.append((
+            f"Strong Core Performance in {a} and {b}: ",
+            f"Both subjects demonstrate high baseline compliance, with {me(a):.2f}% of students "
+            f"in {a} and {me(b):.2f}% in {b} successfully meeting or exceeding the standards.",
+        ))
+    elif len(pair) == 1:
+        a = pair[0]
+        strong.append((
+            f"Strong Core Performance in {a}: ",
+            f"{a} demonstrates high baseline compliance, with {me(a):.2f}% of students "
+            f"successfully meeting or exceeding the standards.",
+        ))
+
+    # Support #1 -- highest S+P% (lowest M+E%).
+    remaining = [s for s in subjects if s not in used]
+    if remaining:
+        weakest = max(remaining, key=sp)
+        used.add(weakest)
+        support.append((
+            f"Critical Need in {weakest}: ",
+            f"{weakest} shows the highest proportion of students needing support, with "
+            f"{sp(weakest):.2f}% of the cohort falling into the lower performance tiers.",
+        ))
+
+    # Support #2 -- next highest S+P%, called out alongside its Exceeding rate.
+    remaining = [s for s in subjects if s not in used]
+    if remaining:
+        second = max(remaining, key=sp)
+        used.add(second)
+        support.append((
+            f"Growth Opportunities in {second}: ",
+            f"{second} has {sp(second):.2f}% of students in the Starting or Progressing "
+            f"categories, and notably has {pct[second]['E']:.2f}% of students reaching the "
+            f"Exceeding (E) level.",
+        ))
+
+    # Support #3 -- next two highest Progressing%, paired.
+    remaining = sorted([s for s in subjects if s not in used], key=lambda s: pct[s]["P"], reverse=True)
+    pair = remaining[:2]
+    used.update(pair)
+    if len(pair) == 2:
+        a, b = pair
+        support.append((
+            f"Progressing Tiers in {a} and {b}: ",
+            f"A significant portion of students are still developing their skills in {a} "
+            f"({pct[a]['P']:.2f}% Progressing) and {b} ({pct[b]['P']:.2f}% Progressing), though "
+            f"both maintain a stable majority meeting expectations ({pct[a]['M']:.2f}% and "
+            f"{pct[b]['M']:.2f}% respectively).",
+        ))
+    elif len(pair) == 1:
+        a = pair[0]
+        support.append((
+            f"Progressing Tier in {a}: ",
+            f"A significant portion of students in {a} are still developing their skills "
+            f"({pct[a]['P']:.2f}% Progressing), though a stable majority are meeting "
+            f"expectations ({pct[a]['M']:.2f}%).",
+        ))
+
+    return strong, support
+
+
+def write_key_takeaways(slide_path, top_header, bottom_header, top_bullets=None, bottom_bullets=None, n_items=3):
+    """Reusable Key Takeaways slide -- once grade-wide ("Strong Subjects" /
     "Subjects Requiring Targeted Support and Intervention") and once per
     subject ("Strength" / "Work On Area"), matching the reference
-    template's Key Takeaways slide structure. Bracketed placeholder bullets
-    for manual fill-in, not auto-generated narrative -- this script has no
-    basis to write "why" a subject is strong or weak, only a human
-    reviewing the charts does."""
+    template's Key Takeaways slide structure.
+
+    top_bullets/bottom_bullets, if given, are lists of (bold_lead, rest)
+    tuples -- computed, real numbers (see generate_grade_takeaways() in
+    build_deck.py), used only for the grade-wide slide. Left as None (the
+    default, and always the case per-subject), this falls back to plain
+    "[Point N]" bracketed placeholders for manual fill-in -- per-subject,
+    there's no numeric basis to write *why* a subject is strong or weak,
+    only a human reviewing the charts does, so no rule-based narrative is
+    attempted there."""
     shapes = []
     shapes.append(shape_xml(2, "Title", 0.5, 0.35, 9.0, 0.5,
         [para_xml([run_xml("KEY TAKEAWAYS", 24, bold=True, color="1A1A1A")], align="ctr")]))
 
+    data_driven = top_bullets is not None or bottom_bullets is not None
     box_x, box_w = 0.5, 9.0
-    top_y, top_h = 1.3, 2.6
-    bottom_y, bottom_h = top_y + top_h + 0.1, 2.6
+    if data_driven:
+        top_y, top_h = 1.15, 2.9
+        bottom_y, bottom_h = top_y + top_h + 0.15, 2.9
+        item_step = (top_h - 0.75) / n_items
+        item_h = item_step - 0.05
+    else:
+        top_y, top_h = 1.3, 2.6
+        bottom_y, bottom_h = top_y + top_h + 0.1, 2.6
+        item_step = 0.6
+        item_h = 0.55
 
-    def section(shape_id, y, h, header, fill_hex):
+    def section(shape_id, y, h, header, fill_hex, bullets):
         shapes.append(shape_xml(shape_id, "SectionBox", box_x, y, box_w, h, [], fill_hex=fill_hex)); shape_id += 1
         shapes.append(shape_xml(shape_id, "SectionHeader", box_x + 0.3, y + 0.2, box_w - 0.6, 0.4,
             [para_xml([run_xml(header, 16, bold=True, color="1A1A1A")])])); shape_id += 1
+        # In data-driven mode (bullets is a list, even an empty one) there's
+        # no generic filler for a category the data didn't produce a real
+        # insight for -- render only what was actually generated instead of
+        # padding the rest with placeholder text. Placeholder mode (bullets
+        # is None) still always shows n_items "[Point N]" prompts.
+        count = n_items if bullets is None else min(len(bullets), n_items)
         item_y = y + 0.75
-        for i in range(n_items):
-            shapes.append(shape_xml(shape_id, "Bullet", box_x + 0.3, item_y, box_w - 0.6, 0.55,
-                [para_xml([run_xml(f"[Point {i + 1}]", 13, color="333333")], bullet=True)])); shape_id += 1
-            item_y += 0.6
+        for i in range(count):
+            if bullets is not None:
+                lead, rest = bullets[i]
+                runs = [run_xml(lead, 13, bold=True, color="1A1A1A"), run_xml(rest, 13, color="333333")]
+            else:
+                runs = [run_xml(f"[Point {i + 1}]", 13, color="333333")]
+            shapes.append(shape_xml(shape_id, "Bullet", box_x + 0.3, item_y, box_w - 0.6, item_h,
+                [para_xml(runs, bullet=True)])); shape_id += 1
+            item_y += item_step
         return shape_id
 
-    next_id = section(3, top_y, top_h, top_header, "EAF3EC")
-    next_id = section(next_id, bottom_y, bottom_h, bottom_header, "FCF3DA")
+    next_id = section(3, top_y, top_h, top_header, "EAF3EC", top_bullets)
+    next_id = section(next_id, bottom_y, bottom_h, bottom_header, "FCF3DA", bottom_bullets)
 
     shapes.append(pic_xml(next_id, "Logo", "rId2", LOGO_X_IN, LOGO_Y_IN, LOGO_W_IN, LOGO_H_IN))
     open(slide_path, "w").write(slide_doc("".join(shapes)))
@@ -836,8 +991,9 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
 
     if grade_stats and mastery_chart_path and grade_chart_path:
         add_dashboard(mastery_chart_path, grade_chart_path)
+        strong_bullets, support_bullets = generate_grade_takeaways(grade_summary, subject_order)
         add_static(write_key_takeaways, "Strong Subjects", "Subjects Requiring Targeted Support and Intervention",
-                   label="Key Takeaways (grade-wide)")
+                   strong_bullets, support_bullets, label="Key Takeaways (grade-wide)")
 
     for subject in subject_order:
         subject_blocks = [b for b in blocks if b["subject"] == subject and b["classes"]]
