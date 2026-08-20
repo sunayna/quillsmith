@@ -22,7 +22,10 @@ import sys
 import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from deck_lib import DECK_TEMPLATE, make_chart, make_hbar_chart, make_donut_chart, assemble
+from deck_lib import (
+    DECK_TEMPLATE, make_chart, make_hbar_chart, make_donut_chart, assemble,
+    ROC_STACK_ORDER, ROC_COLORS, ROC_LEGEND_ORDER,
+)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -78,6 +81,70 @@ def parse_section_csv(path):
         is_we = title.lstrip().startswith("●")
         out.append((subject, title, is_we, s, p, m, e))
     return out
+
+
+def parse_roc_csv(path):
+    """Returns [(R, O, C), ...], one tuple per real standard row in a
+    section's raw *_ROC.csv (Year,Class,Subject,Path,NodeName,Type,
+    ShortName,R,O,C). Only Type == "regular_paper" rows are kept -- the
+    file also carries a "course_paper" rollup row (same NodeName as the
+    subject itself, one per exam) that would double-count marks against
+    the standards beneath it. Unlike parse_section_csv, no comma-anchoring
+    is needed here: these are raw extractor rows with proper RFC4180
+    quoting (README point 6), not the filtered format's rewritten Standard
+    column."""
+    rows = list(csv.reader(open(path)))
+    out = []
+    for r in rows[1:]:
+        if len(r) < 10 or r[5].strip() != "regular_paper":
+            continue
+        try:
+            out.append(tuple(int(round(float(x))) for x in r[-3:]))
+        except ValueError:
+            continue
+    return out
+
+
+def build_sel_summary(raw_folder, filename_prefix):
+    """Aggregates Social Emotional Learning's R/O/C marks across every
+    section's raw *_ROC.csv for this grade -- SEL is on a different scale
+    than S/P/M/E (README point 8) so it never enters build_blocks()/
+    subject_order, and needs its own parallel aggregation here. students
+    is the same per-section-max-then-sum headcount proxy
+    subject_student_count uses for S/P/M/E subjects. Returns None if this
+    grade/term has no ROC data at all (e.g. a folder with no SEL results
+    yet, or an older term before SEL was graded on this scale)."""
+    if not os.path.isdir(raw_folder):
+        return None
+    files = sorted(f for f in os.listdir(raw_folder) if f.lower().endswith("_roc.csv"))
+    if filename_prefix is not None:
+        files = [f for f in files if f.startswith(filename_prefix)]
+    if not files:
+        return None
+
+    totals = {"R": 0, "O": 0, "C": 0}
+    per_section_max = {}
+    standard_count = 0
+    for fname in files:
+        cls = class_label_from_filename(fname)
+        rows = parse_roc_csv(os.path.join(raw_folder, fname))
+        standard_count = max(standard_count, len(rows))
+        section_max = 0
+        for r, o, c in rows:
+            totals["R"] += r
+            totals["O"] += o
+            totals["C"] += c
+            section_max = max(section_max, r + o + c)
+        per_section_max[cls] = section_max
+
+    if sum(totals.values()) == 0:
+        return None
+    return {
+        "totals": totals,
+        "students": sum(per_section_max.values()),
+        "sections": len(files),
+        "standards": standard_count,
+    }
 
 
 def cluster_titles(raw_titles, threshold=0.72):
@@ -331,6 +398,18 @@ def main():
     print("subjects:", subject_order)
     print("total blocks:", len(blocks))
 
+    # SEL's raw *_ROC.csv companions live one level up from `folder` when
+    # `folder` is the usual .../filtered dir (they're never filtered --
+    # build_blocks()/filter_standards.py don't read them at all, see
+    # README point 8) -- fall back to `folder` itself for a caller that
+    # already points at the raw dir directly.
+    raw_folder = folder
+    if os.path.basename(os.path.normpath(folder)).lower() == "filtered":
+        raw_folder = os.path.dirname(os.path.normpath(folder))
+    sel_summary = build_sel_summary(raw_folder, filename_prefix)
+    if sel_summary:
+        print("SEL:", sel_summary["students"], "students,", sel_summary["standards"], "standards")
+
     print("=== rendering charts ===")
     work_dir = os.path.join(ROOT, ".build", tag)
     chart_dir = os.path.join(work_dir, "charts")
@@ -381,6 +460,12 @@ def main():
                        xlabel="Standard", rotate_labels=20, label_maxlen=22, show_percent=True)
             subject_standard_chart[subject] = p
 
+    sel_donut_chart_path = None
+    if sel_summary:
+        sel_donut_chart_path = os.path.join(chart_dir, "donut_sel.png")
+        make_donut_chart(sel_summary["totals"], sel_donut_chart_path,
+                          stack_order=ROC_STACK_ORDER, colors=ROC_COLORS, legend_order=ROC_LEGEND_ORDER)
+
     json.dump(
         {"subject_order": subject_order, "blocks": blocks},
         open(os.path.join(work_dir, "data.json"), "w"),
@@ -405,6 +490,8 @@ def main():
         grade_stats=grade_stats,
         subject_stats_map=subject_stats_map,
         period_label=period_label,
+        sel_summary=sel_summary,
+        sel_donut_chart_path=sel_donut_chart_path,
     )
 
     print("=== zipping into .pptx ===")

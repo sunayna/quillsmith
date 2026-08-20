@@ -184,28 +184,37 @@ def make_hbar_chart(values, out_path, xlabel="", label_maxlen=None):
     plt.close(fig)
 
 
-def make_donut_chart(counts, out_path):
-    """One subject's overall S/P/M/E split as a single donut -- an
-    aggregate distribution (every mark across every standard and section,
-    summed into one whole), unlike make_chart/make_hbar_chart which always
+def make_donut_chart(counts, out_path, stack_order=None, colors=None, legend_order=None):
+    """One subject's overall split as a single donut -- an aggregate
+    distribution (every mark across every standard and section, summed
+    into one whole), unlike make_chart/make_hbar_chart which always
     compare several labels side by side. Matches the reference template's
-    layout exactly: just the S/P/M/E letters on the wedges themselves (no
-    percentages here -- those live in the callout rows written_subject_
-    snapshot() builds beside this image) plus a small legend below."""
-    labels = [k for k in STACK_ORDER if counts.get(k, 0) > 0] or list(STACK_ORDER)
+    layout exactly: just the band letters on the wedges themselves (no
+    percentages here -- those live in the callout rows write_subject_
+    snapshot()/write_sel_snapshot() build beside this image) plus a small
+    legend below.
+
+    stack_order/colors/legend_order default to the S/P/M/E scale; pass
+    ROC_STACK_ORDER/ROC_COLORS/ROC_LEGEND_ORDER for SEL's R/O/C scale
+    instead -- the chart itself doesn't care which scale it's plotting."""
+    stack_order = stack_order or STACK_ORDER
+    colors = colors or COLORS
+    legend_order = legend_order or LEGEND_ORDER
+
+    labels = [k for k in stack_order if counts.get(k, 0) > 0] or list(stack_order)
     vals = [counts.get(k, 0) for k in labels]
-    colors = [COLORS[k] for k in labels]
+    wedge_colors = [colors[k] for k in labels]
 
     fig, ax = plt.subplots(figsize=(4.6, 5.2), dpi=150)
     ax.pie(
-        vals, colors=colors, labels=labels, labeldistance=0.79, startangle=90, counterclock=False,
+        vals, colors=wedge_colors, labels=labels, labeldistance=0.79, startangle=90, counterclock=False,
         wedgeprops=dict(width=0.42, edgecolor="white", linewidth=2),
         textprops={"fontsize": 15, "color": "#1A1A1A", "fontweight": "bold"},
     )
-    handles = [plt.Rectangle((0, 0), 1, 1, color=COLORS[k]) for k in LEGEND_ORDER]
+    handles = [plt.Rectangle((0, 0), 1, 1, color=colors[k]) for k in legend_order]
     ax.legend(
-        handles, LEGEND_ORDER, loc="upper center", bbox_to_anchor=(0.5, 0.06),
-        ncol=4, frameon=False, fontsize=13, handlelength=1.2, handleheight=1.2,
+        handles, legend_order, loc="upper center", bbox_to_anchor=(0.5, 0.06),
+        ncol=len(legend_order), frameon=False, fontsize=13, handlelength=1.2, handleheight=1.2,
     )
     ax.set_aspect("equal")
     fig.tight_layout()
@@ -412,6 +421,19 @@ PROFICIENCY_BANDS = [
     ("Progressing", "40.01 - 70", "Approaching expectations; not yet meeting the standard.", hex6(COLORS["P"])),
     ("Meeting", "70.01 - 95", "At grade-level expectations for this standard.", hex6(COLORS["M"])),
     ("Exceeding", "95.01 - 100", "Above grade-level expectations.", hex6(COLORS["E"])),
+]
+
+# Socio-Emotional Learning grades on its own R/O/C scale (Rarely/
+# Occasionally/Consistently), not S/P/M/E -- see README point 8 under "How
+# it works". Same 3 colors reused from the low/mid/high end of COLORS so
+# the deck's overall palette stays consistent, just relabeled.
+ROC_COLORS = {"R": COLORS["S"], "O": COLORS["P"], "C": COLORS["M"]}
+ROC_STACK_ORDER = ["R", "O", "C"]
+ROC_LEGEND_ORDER = ["C", "O", "R"]
+ROC_BANDS = [
+    ("Rarely", "Rarely demonstrates this skill; needs consistent modeling and support.", hex6(ROC_COLORS["R"])),
+    ("Occasionally", "Shows this skill inconsistently; developing with practice.", hex6(ROC_COLORS["O"])),
+    ("Consistently", "Reliably demonstrates this skill across situations.", hex6(ROC_COLORS["C"])),
 ]
 
 
@@ -777,6 +799,47 @@ def write_subject_snapshot(slide_path, subject, stats, counts, donut_chart_rel):
     write_rels(slide_path, "slideLayout2.xml", extra=image_rel_xml("rId3", donut_chart_rel))
 
 
+def write_sel_snapshot(slide_path, grade_num, sel_summary, donut_chart_rel):
+    """Grade-wide Social Emotional Learning snapshot -- same donut +
+    percentage-callout layout as write_subject_snapshot, but for SEL's 3
+    R/O/C bands instead of 4 S/P/M/E ones (see ROC_BANDS). SEL never enters
+    the main subject loop (its R/O/C data doesn't fit the S/P/M/E blocks
+    pipeline), so this is assembled from sel_summary's own totals/students/
+    standards instead of a `blocks`-derived counts dict."""
+    counts = sel_summary["totals"]
+    total = sum(counts.get(k, 0) for k in ROC_STACK_ORDER) or 1
+    shapes = []
+    shapes.append(shape_xml(2, "Label", 0.5, 0.35, LOGO_X_IN - 0.7, 0.3,
+        [para_xml([run_xml("DATA OVERVIEW", 11, bold=True, color="1C7293")])]))
+    shapes.append(shape_xml(3, "Title", 0.5, 0.65, LOGO_X_IN - 0.7, 0.5,
+        [para_xml([run_xml("Social Emotional Learning grade-wide snapshot", 22, bold=True, color="1A1A1A")])]))
+    shapes.append(shape_xml(4, "Subtitle", 0.5, 1.2, 9.0, 0.35,
+        [para_xml([run_xml(f'{sel_summary["students"]} students  •  {sel_summary["standards"]} standards assessed', 13, color="6E6E73")])]))
+
+    donut_x, donut_y, donut_w, donut_h = 0.5, 1.75, 3.68, 4.16
+    shapes.append(pic_xml(5, "Donut", "rId3", donut_x, donut_y, donut_w, donut_h))
+    shapes.append(shape_xml(6, "DonutCaption", donut_x, donut_y + donut_h + 0.05, donut_w, 0.35,
+        [para_xml([run_xml("Grade-wide level distribution", 12, bold=True, color="1A1A1A")], align="ctr")]))
+
+    col_x, col_w = 4.6, 4.9
+    row_h = 1.4  # taller than write_subject_snapshot's 1.15 -- 3 rows instead of 4 fill the same vertical span
+    row_y0 = 2.1
+    shape_id = 7
+    for code, (name, desc, color_hex) in zip(ROC_STACK_ORDER, ROC_BANDS):
+        ry = row_y0 + ROC_STACK_ORDER.index(code) * row_h
+        pct = counts.get(code, 0) / total * 100
+        shapes.append(shape_xml(shape_id, "BandBar", col_x, ry, 0.1, 1.1, [], fill_hex=color_hex)); shape_id += 1
+        shapes.append(shape_xml(shape_id, "BandPct", col_x + 0.3, ry - 0.08, 1.8, 0.55,
+            [para_xml([run_xml(f"{pct:.1f}%", 26, bold=True, color="1A1A1A")])])); shape_id += 1
+        shapes.append(shape_xml(shape_id, "BandDesc", col_x + 0.3, ry + 0.5, col_w - 0.3, 0.7,
+            [para_xml([run_xml(f"{name} — {desc}", 12, color="4A4A4E")])])); shape_id += 1
+
+    shapes.append(pic_xml(shape_id, "Logo", "rId2", LOGO_X_IN, LOGO_Y_IN, LOGO_W_IN, LOGO_H_IN)); shape_id += 1
+
+    open(slide_path, "w").write(slide_doc("".join(shapes)))
+    write_rels(slide_path, "slideLayout2.xml", extra=image_rel_xml("rId3", donut_chart_rel))
+
+
 # Template, not literal content -- bracketed placeholders for whoever owns
 # each subject's data to fill in. Row labels ("Level 2"/"High Level") and
 # the bullet grid's column count are fixed structure; the bracketed text is
@@ -899,7 +962,8 @@ def fix_title_slide(unpacked, grade_num, session_label, subtitle_label):
 def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle_label,
              grade_chart_path=None, subject_donut_chart=None, subject_section_chart=None,
              subject_standard_chart=None, mastery_chart_path=None, grade_stats=None,
-             subject_stats_map=None, period_label="", grade_summary=None):
+             subject_stats_map=None, period_label="", grade_summary=None,
+             sel_summary=None, sel_donut_chart_path=None):
     subject_donut_chart = subject_donut_chart or {}
     subject_section_chart = subject_section_chart or {}
     subject_standard_chart = subject_standard_chart or {}
@@ -987,6 +1051,15 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
         add_slide(slide_name)
         print("  snapshot:", slide_name, subject)
 
+    def add_sel_snapshot(summary, donut_path):
+        import shutil
+        donut_name = next_media_name(unpacked, "png")
+        shutil.copy(donut_path, f"{unpacked}/ppt/media/{donut_name}")
+        slide_name = f"slide{counters['num']}.xml"
+        write_sel_snapshot(f"{slides_dir}/{slide_name}", grade_num, summary, f"../media/{donut_name}")
+        add_slide(slide_name)
+        print("  sel snapshot:", slide_name)
+
     add_static(write_how_to_use, label="How to use this deck")
 
     if grade_stats and mastery_chart_path and grade_chart_path:
@@ -1015,6 +1088,16 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
 
         add_static(write_key_takeaways, "Strength", "Work On Area", label=f"Key Takeaways ({subject})")
         add_static(write_instructional_implications, grade_num, label=f"Instructional Implications ({subject})")
+
+    # SEL never enters subject_order/blocks (its R/O/C scale doesn't fit the
+    # S/P/M/E pipeline -- see README point 8), so it gets its 3 slides here
+    # instead of inside the loop above: one grade-wide donut snapshot, then
+    # the same Key Takeaways / Instructional Implications placeholders every
+    # other subject gets.
+    if sel_summary and sel_donut_chart_path:
+        add_sel_snapshot(sel_summary, sel_donut_chart_path)
+        add_static(write_key_takeaways, "Strength", "Work On Area", label="Key Takeaways (SEL)")
+        add_static(write_instructional_implications, grade_num, label="Instructional Implications (SEL)")
 
     # only keep the first two original slides (title, benchmarking) in the deck;
     # everything else from the sample template gets dropped
