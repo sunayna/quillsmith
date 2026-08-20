@@ -269,14 +269,28 @@ async function readLiveTree(page, ctx, subjectUuid) {
   const DBG = !!process.env.DEBUG_TREE;
   let topicRefs = await domChildrenOfUuid(page, subjectUuid);
 
-  // Some subjects (confirmed in SEL) nest their real topics one level
-  // deeper, behind a single extra course_paper-typed pass-through node,
-  // instead of listing them directly under the subject like every other
-  // subject does -- a genuine Topic elsewhere is always type:"regular_paper"
-  // (course_paper is otherwise reserved for the Subject level itself), so
-  // unwrap any such wrapper by descending into it and treating ITS children
-  // as the real topics. The wrapper itself gets queued for deletion too --
-  // it's a redundant artifact the xlsx has no concept of, not real content.
+  // Some subjects nest their real topics one level deeper, behind a single
+  // extra course_paper-typed pass-through node, instead of listing them
+  // directly under the subject like every other subject does -- a genuine
+  // Topic elsewhere is always type:"regular_paper" (course_paper is
+  // otherwise reserved for the Subject level itself), so this unwraps any
+  // such wrapper by descending into it and treating ITS children as the
+  // real topics, queuing the wrapper itself for deletion as (it was
+  // assumed) a redundant artifact the xlsx has no concept of.
+  //
+  // CONFIRMED WRONG FOR SEL, live, 2026-08-20: that wrapper ("Social
+  // Emotional Learning" under "Socio-Emotional Learning") is SEL's actual
+  // link to its linked ReportPlan, not a throwaway pass-through -- deleting
+  // it and promoting its children (which were themselves already-real
+  // leaf standards, not sub-topics) collapsed a whole level of Grade
+  // VII-B's live tree. No students had marks entered yet that time, so
+  // nothing was lost, but SEL's tree cannot be safely rebuilt through this
+  // wipe-and-rebuild path at all -- this isn't a bug in the unwrap
+  // heuristic to go fix, it's why SEL stays in SKIP_SUBJECTS below
+  // unconditionally. Left the unwrap logic itself in place since it may
+  // still be correct for some other, not-yet-seen subject shape -- SEL
+  // specifically is excluded by the hard skip instead of trying to special
+  // -case this function further.
   const wrapperUuidsToDelete = [];
   const unwrapped = [];
   for (const ref of topicRefs) {
@@ -702,10 +716,20 @@ async function main() {
   // wipes/recreates empty topic shells with no way to add real standards.
   // Skipping it here until there's a working approach for that plan,
   // rather than repeatedly running a subject that can't actually succeed.
-  // Set INCLUDE_SEL=1 to lift the skip for a one-off investigation run --
-  // combine with DRY_RUN=1 (see below) so readLiveTree/buildPlan still run
-  // and print what they'd do, without saveStructure ever actually firing.
-  const SKIP_SUBJECTS = process.env.INCLUDE_SEL ? [] : ['sel'];
+  //
+  // CONFIRMED live, 2026-08-20 (Grade VII-B, 2026-27 Term 1): an
+  // INCLUDE_SEL override used to exist here for a one-off DRY_RUN
+  // investigation. Even under the review-gated web UI (not this raw CLI
+  // auto-apply path), applying SEL's plan deleted its linked-ReportPlan
+  // wrapper node and replaced its 4 real leaf standards with new
+  // topic/standard shells one level too shallow -- exactly the "wipes/
+  // recreates empty shells" failure mode described above, not a
+  // near-miss. No marks had been entered yet so nothing was lost, but this
+  // is unconditional now -- no env var, no flag. Don't reintroduce one
+  // without first finding an actual way to write to SEL's ReportPlan
+  // (likely needs reportbee support/docs, not more trial runs against a
+  // live section).
+  const SKIP_SUBJECTS = ['sel'];
   const subjects = Object.keys(target).filter(name => {
     if (SKIP_SUBJECTS.includes(name.toLowerCase())) {
       console.log(`\n=== ${name} ===\n⏭️  Skipped (known limitation -- see SKIP_SUBJECTS comment above).`);
@@ -803,7 +827,7 @@ async function main() {
 module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
-  findDefaultTreeFile, SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
+  findDefaultTreeFile, SKIP_SUBJECTS: ['sel'],
 };
 
 if (require.main === module) {
