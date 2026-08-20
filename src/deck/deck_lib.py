@@ -1095,6 +1095,9 @@ def assemble(unpacked, subject_order, blocks, grade_num, session_label, subtitle
     # the same Key Takeaways / Instructional Implications placeholders every
     # other subject gets.
     if sel_summary and sel_donut_chart_path:
+        # sel_summary already has the students/sections/standards keys
+        # write_subject_title expects from a subject's stats dict.
+        add_static(write_subject_title, "Social Emotional Learning", grade_num, period_label, sel_summary, label="SEL")
         add_sel_snapshot(sel_summary, sel_donut_chart_path)
         add_static(write_key_takeaways, "Strength", "Work On Area", label="Key Takeaways (SEL)")
         add_static(write_instructional_implications, grade_num, label="Instructional Implications (SEL)")
