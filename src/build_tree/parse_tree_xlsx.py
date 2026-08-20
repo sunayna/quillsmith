@@ -53,6 +53,19 @@ STRUCTURAL_ROW_RE = re.compile(
 # clean numeric values in separate columns. Extracts (label, percent) pairs.
 TEXT_WEIGHT_PAIR_RE = re.compile(r'([A-Za-z]+)\s*=\s*(\d+(?:\.\d+)?)\s*%')
 
+# SEL grades every standard directly on a Rarely/Occasionally/Consistently
+# scale (README point 8 under "How it works") -- confirmed there's no
+# FA/SA assessment split beneath any of its standards, unlike every other
+# subject. row_mark_entry_mode() only ever reads a "grade" signal off an
+# assessment's own Marks cell, so with no assessment row to carry that
+# signal, SEL's standards would otherwise default to "score" (numeric)
+# like everything else. Matched by subject name instead of asking the
+# sheet to carry a fake assessment row just to trigger the normal keyword
+# check -- deliberately not literal subject_name == "SEL" since the live
+# tree/report card refers to it as "Social(/Socio)-Emotional Learning" in
+# other contexts (see the reportbee tree screenshot).
+SEL_SUBJECT_RE = re.compile(r'\bsel\b|social\s*[-\s]*emotional\s*learning', re.I)
+
 
 def first_number(*vals):
     for v in vals:
@@ -311,7 +324,13 @@ def parse_workbook(xlsx_path, grade, subject_filter=None):
                 continue
         end_idx = subject_starts[i + 1][0] if i + 1 < len(subject_starts) else len(all_rows)
         block = all_rows[start_idx:end_idx]
-        result[subject_name] = parse_subject_block(block)
+        topics = parse_subject_block(block)
+        if SEL_SUBJECT_RE.search(subject_name):
+            for topic in topics.values():
+                topic["mark_entry_mode"] = "grade"
+                for std in topic["standards"]:
+                    std["mark_entry_mode"] = "grade"
+        result[subject_name] = topics
 
     return result
 
