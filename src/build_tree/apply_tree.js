@@ -702,7 +702,10 @@ async function main() {
   // wipes/recreates empty topic shells with no way to add real standards.
   // Skipping it here until there's a working approach for that plan,
   // rather than repeatedly running a subject that can't actually succeed.
-  const SKIP_SUBJECTS = ['sel'];
+  // Set INCLUDE_SEL=1 to lift the skip for a one-off investigation run --
+  // combine with DRY_RUN=1 (see below) so readLiveTree/buildPlan still run
+  // and print what they'd do, without saveStructure ever actually firing.
+  const SKIP_SUBJECTS = process.env.INCLUDE_SEL ? [] : ['sel'];
   const subjects = Object.keys(target).filter(name => {
     if (SKIP_SUBJECTS.includes(name.toLowerCase())) {
       console.log(`\n=== ${name} ===\n⏭️  Skipped (known limitation -- see SKIP_SUBJECTS comment above).`);
@@ -800,7 +803,7 @@ async function main() {
 module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
-  findDefaultTreeFile, SKIP_SUBJECTS: ['sel'],
+  findDefaultTreeFile, SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
 };
 
 if (require.main === module) {
