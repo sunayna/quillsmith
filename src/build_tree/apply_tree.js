@@ -275,27 +275,37 @@ async function readLiveTree(page, ctx, subjectUuid) {
   // Topic elsewhere is always type:"regular_paper" (course_paper is
   // otherwise reserved for the Subject level itself), so this unwraps any
   // such wrapper by descending into it and treating ITS children as the
-  // real topics, queuing the wrapper itself for deletion as (it was
-  // assumed) a redundant artifact the xlsx has no concept of.
+  // real topics.
   //
-  // CONFIRMED WRONG FOR SEL, live, 2026-08-20: that wrapper ("Social
-  // Emotional Learning" under "Socio-Emotional Learning") is SEL's actual
-  // link to its linked ReportPlan, not a throwaway pass-through -- deleting
-  // it and promoting its children (which were themselves already-real
-  // leaf standards, not sub-topics) collapsed a whole level of Grade
-  // VII-B's live tree. No students had marks entered yet that time, so
-  // nothing was lost, but SEL's tree cannot be safely rebuilt through this
-  // wipe-and-rebuild path at all -- this isn't a bug in the unwrap
-  // heuristic to go fix, it's why SEL stays in SKIP_SUBJECTS below
-  // unconditionally. Left the unwrap logic itself in place since it may
-  // still be correct for some other, not-yet-seen subject shape -- SEL
-  // specifically is excluded by the hard skip instead of trying to special
-  // -case this function further.
+  // CONFIRMED live, 2026-08-20 (Grade VII-B): a course_paper wrapper is NOT
+  // always a throwaway artifact -- SEL's own wrapper ("Social Emotional
+  // Learning" under "Socio-Emotional Learning") carries a non-empty
+  // `linked_nodes` field (`[{plan_id, node_uuid, plan_type: "ReportPlan"}]`)
+  // pointing at a separate, per-section ReportPlan record this script has
+  // no way to create or repair. The original version of this function
+  // queued every course_paper wrapper for deletion unconditionally,
+  // assuming it was redundant -- for SEL that deleted the one node holding
+  // that link, collapsing a whole tree level. `linked_nodes` is the actual,
+  // reliable signal (type alone isn't -- a wrapper can be legitimately
+  // redundant OR a protected link, and only this field tells them apart):
+  // a linked wrapper is now NEVER queued for deletion and is treated as
+  // permanently off-limits -- still unwrapped for reading (its children are
+  // real topics), but new topics get created as ITS children (via
+  // protectedParentUuid, below), not the subject's, and the wrapper node
+  // itself is never touched by anything downstream.
   const wrapperUuidsToDelete = [];
+  let protectedParentUuid = null;
   const unwrapped = [];
   for (const ref of topicRefs) {
     if (ref.type === 'course_paper' && ref.hasChildren) {
-      wrapperUuidsToDelete.push(ref.uuid);
+      const wrapperFull = await fetchFullNode(page, ctx, ref.uuid);
+      const isLinked = !!(wrapperFull && Array.isArray(wrapperFull.linked_nodes) && wrapperFull.linked_nodes.length > 0);
+      if (isLinked) {
+        if (DBG) console.log(`  [dbg] wrapper "${ref.name}" (${ref.uuid}) has linked_nodes -- protected, not queued for deletion`);
+        protectedParentUuid = ref.uuid;
+      } else {
+        wrapperUuidsToDelete.push(ref.uuid);
+      }
       unwrapped.push(...await domChildrenOfUuid(page, ref.uuid));
     } else {
       unwrapped.push(ref);
@@ -325,7 +335,7 @@ async function readLiveTree(page, ctx, subjectUuid) {
     }
     tree.push(topicEntry);
   }
-  return { topics: tree, wrapperUuidsToDelete };
+  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid };
 }
 
 // Creation strategy validated on Module (Seasons/Metals and Non-metals):
@@ -717,19 +727,17 @@ async function main() {
   // Skipping it here until there's a working approach for that plan,
   // rather than repeatedly running a subject that can't actually succeed.
   //
-  // CONFIRMED live, 2026-08-20 (Grade VII-B, 2026-27 Term 1): an
-  // INCLUDE_SEL override used to exist here for a one-off DRY_RUN
-  // investigation. Even under the review-gated web UI (not this raw CLI
-  // auto-apply path), applying SEL's plan deleted its linked-ReportPlan
-  // wrapper node and replaced its 4 real leaf standards with new
-  // topic/standard shells one level too shallow -- exactly the "wipes/
-  // recreates empty shells" failure mode described above, not a
-  // near-miss. No marks had been entered yet so nothing was lost, but this
-  // is unconditional now -- no env var, no flag. Don't reintroduce one
-  // without first finding an actual way to write to SEL's ReportPlan
-  // (likely needs reportbee support/docs, not more trial runs against a
-  // live section).
-  const SKIP_SUBJECTS = ['sel'];
+  // CONFIRMED live, 2026-08-20 (Grade VII-B, 2026-27 Term 1): applying
+  // SEL's plan deleted its linked-ReportPlan wrapper node and replaced its
+  // 4 real leaf standards with new topic/standard shells one level too
+  // shallow -- exactly the "wipes/recreates empty shells" failure mode
+  // described above. No marks had been entered yet so nothing was lost;
+  // fixed manually in reportbee's own UI afterward. readLiveTree now
+  // detects that wrapper via its `linked_nodes` field and never queues it
+  // for deletion (see readLiveTree's own comment) -- INCLUDE_SEL re-added
+  // here to test that fix, deliberately against a fresh section (VII-C)
+  // that's never been touched, not VII-B/VII-A again.
+  const SKIP_SUBJECTS = process.env.INCLUDE_SEL ? [] : ['sel'];
   const subjects = Object.keys(target).filter(name => {
     if (SKIP_SUBJECTS.includes(name.toLowerCase())) {
       console.log(`\n=== ${name} ===\n⏭️  Skipped (known limitation -- see SKIP_SUBJECTS comment above).`);
@@ -760,9 +768,10 @@ async function main() {
     const { accessToken, profileId } = await sampleAuthParams(page, domLabel);
     const ctx = { baseUrl, planId: liveSubject.plan_id, csrfToken, accessToken, profileId };
 
-    const { topics: liveTopics, wrapperUuidsToDelete } = await readLiveTree(page, ctx, liveSubject.uuid);
+    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid } = await readLiveTree(page, ctx, liveSubject.uuid);
     if (process.env.DEBUG_TREE) {
       console.log('\n🔎 Live tree read:');
+      if (protectedParentUuid) console.log(`  (new topics will be created under protected wrapper ${protectedParentUuid}, not the subject itself)`);
       for (const t of liveTopics) {
         console.log(`  Topic "${t.name}" (${t.uuid}) conversion_score=${t.conversion_score}`);
         for (const s of t.standards) {
@@ -773,7 +782,7 @@ async function main() {
         }
       }
     }
-    const plan = buildPlan(liveTopics, target[subjectName], liveSubject.uuid);
+    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid);
     for (const uuid of wrapperUuidsToDelete) {
       plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
     }
@@ -827,7 +836,7 @@ async function main() {
 module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
-  findDefaultTreeFile, SKIP_SUBJECTS: ['sel'],
+  findDefaultTreeFile, SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
 };
 
 if (require.main === module) {
