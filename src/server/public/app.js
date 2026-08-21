@@ -139,7 +139,9 @@ function handleStatus(status, data) {
     document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName}`;
     document.getElementById('tree-subject-meta').textContent =
       `${data.remaining} subject(s) remaining after this one.`;
+    const unchanged = data.unchanged || [];
     document.getElementById('tree-subject-plan').innerHTML = `
+      ${unchanged.length ? `<p>${unchanged.length} topic(s) already match, left untouched:</p>${renderPlanList(unchanged)}` : ''}
       <p>${data.updates.length} update(s):</p>${renderPlanList(data.updates)}
       <p>${data.deletes.length} deletion(s):</p>${renderPlanList(data.deletes)}
       <p>${data.creates.length} creation(s):</p>${renderPlanList(data.creates)}

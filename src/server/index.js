@@ -404,6 +404,9 @@ async function advanceToNextSubject(job) {
 
       const updateList = Object.values(plan.updates);
       const createList = Object.values(plan.creates);
+      if (plan.unchanged.length) {
+        job.log(`${plan.unchanged.length} topic(s) already match the xlsx, left untouched: ${plan.unchanged.join(', ')}`);
+      }
 
       if (updateList.length === 0 && plan.deletes.length === 0 && createList.length === 0) {
         job.log('Nothing to apply for this subject.');
@@ -415,6 +418,7 @@ async function advanceToNextSubject(job) {
       job.setStatus('awaiting-subject-decision', {
         subjectName,
         remaining: job.subjectQueue.length,
+        unchanged: plan.unchanged,
         updates: updateList.map((u) => u._label),
         deletes: plan.deletes.map((d) => d.label),
         creates: plan.needsCreation.map((c) => c.label),

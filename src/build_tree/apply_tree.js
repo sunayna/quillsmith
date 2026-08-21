@@ -538,17 +538,83 @@ function isStandingCategory(topic) {
   return topic.use_for_aggregation === false || normalize(topic.name).includes('workethics');
 }
 
+// Wipe-and-rebuild used to delete+recreate every non-standing topic
+// unconditionally, even ones that were already byte-for-byte identical to
+// the xlsx -- pure churn, and not even harmless churn: it's what triggered
+// the same-name delete+create validation failure (see saveStructureTwoPhase's
+// comment) on a topic that hadn't actually changed at all. These compare a
+// live topic against its xlsx target and leave it completely untouched
+// (neither deleted nor recreated) when everything the xlsx actually
+// specifies already matches -- name (the lookup key itself), weight, mode,
+// and every standard/assessment beneath it. Anything else -- a new topic, a
+// renamed/reweighted one, or one whose standards changed -- still goes
+// through the normal delete+recreate path; this only removes the case
+// where there was never anything to do. Order isn't compared (a
+// topics-only-reordered, otherwise-identical xlsx would go undetected) --
+// deliberately out of scope: order is cosmetic sort position, not a
+// grading-affecting field, so leaving it stale on a rare reorder is a
+// reasonable trade against reintroducing the churn this exists to avoid.
+const WEIGHT_EPSILON = 0.05;
+
+function numsClose(a, b) {
+  if (a == null || b == null) return true; // no opinion when either side doesn't specify a value
+  return Math.abs(a - b) < WEIGHT_EPSILON;
+}
+
+function assessmentsMatch(liveAssessments, targetAssessments) {
+  if (liveAssessments.length !== targetAssessments.length) return false;
+  const liveByName = new Map(liveAssessments.map(a => [a.name, a]));
+  for (const targetAsm of targetAssessments) {
+    const liveAsm = liveByName.get(targetAsm.name);
+    if (!liveAsm) return false;
+    if (!numsClose(liveAsm.conversion_score, targetAsm.weightage)) return false;
+    if (!numsClose(liveAsm.max_score, targetAsm.max_score)) return false;
+    if (targetAsm.mark_entry_mode && liveAsm.mark_entry_mode !== targetAsm.mark_entry_mode) return false;
+  }
+  return true;
+}
+
+function standardsMatch(liveStandards, targetStandards) {
+  if (liveStandards.length !== targetStandards.length) return false;
+  const liveByName = new Map(liveStandards.map(s => [s.name, s]));
+  for (const targetStd of targetStandards) {
+    const liveStd = liveByName.get(targetStd.name);
+    if (!liveStd) return false;
+    if (!numsClose(liveStd.conversion_score, targetStd.weightage)) return false;
+    if (targetStd.mark_entry_mode && liveStd.mark_entry_mode !== targetStd.mark_entry_mode) return false;
+    if (!assessmentsMatch(liveStd.assessments, targetStd.assessments)) return false;
+  }
+  return true;
+}
+
+function topicUnchanged(liveTopic, targetTopic) {
+  if (!numsClose(liveTopic.conversion_score, targetTopic.weightage)) return false;
+  if (targetTopic.mark_entry_mode && liveTopic.mark_entry_mode !== targetTopic.mark_entry_mode) return false;
+  return standardsMatch(liveTopic.standards, targetTopic.standards);
+}
+
 function buildPlan(liveTopics, targetTopics, subjectUuid) {
-  const plan = { deletes: [], needsCreation: [], creates: {} };
+  const plan = { deletes: [], needsCreation: [], creates: {}, unchanged: [] };
+  const liveByName = new Map(liveTopics.filter(t => !isStandingCategory(t)).map(t => [t.name, t]));
 
   for (const topic of liveTopics) {
     if (isStandingCategory(topic)) continue;
+    const targetTopic = targetTopics[topic.name];
+    if (targetTopic && topicUnchanged(topic, targetTopic)) {
+      plan.unchanged.push(topic.name);
+      continue;
+    }
     const childUuids = topic.standards.flatMap(s => [s.uuid, ...s.assessments.map(a => a.uuid)]);
     plan.deletes.push({ uuid: topic.uuid, label: `[topic, deleted] "${topic.name.slice(0, 60)}"`, children: childUuids });
   }
 
   let order = 10;
   for (const [topicName, targetTopic] of Object.entries(targetTopics)) {
+    const liveTopic = liveByName.get(topicName);
+    if (liveTopic && topicUnchanged(liveTopic, targetTopic)) {
+      order += 10;
+      continue;
+    }
     const labels = [];
     createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels);
     for (const l of labels) plan.needsCreation.push({ label: l });
@@ -863,6 +929,9 @@ async function main() {
 
     const updateList = Object.values(plan.updates);
     const createList = Object.values(plan.creates);
+    if (plan.unchanged.length) {
+      console.log(`\n${plan.unchanged.length} topic(s) already match the xlsx, left untouched: ${plan.unchanged.join(', ')}`);
+    }
     console.log(`\n${updateList.length} update(s):`);
     for (const u of updateList) console.log(`  ${u._label}`);
     console.log(`\n${plan.deletes.length} deletion(s):`);
