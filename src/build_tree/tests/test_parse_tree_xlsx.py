@@ -249,7 +249,13 @@ def test_single_lt_assessments_nest_under_lt():
     flattened away. A standard with several LTs still derives its own
     weight as their sum, and each LT's own FA/SA split is independent of
     its sibling LTs' weights (always its own 20/80, not scaled by anything
-    else) since it's a self-contained nested list now."""
+    else) since it's a self-contained nested list now.
+
+    CONFIRMED live, 2026-08-21: an LT's own weight must stay its raw xlsx
+    value (just scaled from fraction to percentage, e.g. 0.2 -> 20.0), NOT
+    renormalized to sum to 100 within its standard the way flat English/
+    Math leaves are -- that renormalization inflated a 15%-weighted LT to
+    read 27.27%, contradicting the sheet directly."""
     rows = [
         ("Hindi", None, None, None),
         ("Topic Name", "Shravan", None, None),
@@ -280,7 +286,7 @@ def test_single_lt_assessments_nest_under_lt():
     assert len(std1["assessments"]) == 1
     lt1 = std1["assessments"][0]
     assert lt1["name"] == "Fact gathering"
-    assert lt1["weightage"] == 100.0  # this standard's only LT, so 100% of it
+    assert lt1["weightage"] == 20.0  # raw xlsx value (0.2), scaled to whole-percent -- not renormalized
     nested1 = {a["name"]: a for a in lt1["assessments"]}
     assert nested1["FA"]["weightage"] == pytest.approx(20.0)
     assert nested1["SA"]["weightage"] == pytest.approx(80.0)
@@ -291,10 +297,12 @@ def test_single_lt_assessments_nest_under_lt():
     assert len(std2["assessments"]) == 3  # LT1, LT2, LT3 stay as real nodes
     lt_names = {a["name"] for a in std2["assessments"]}
     assert lt_names == {"Sequencing events", "Character traits", "Setting description"}
-    # LT3 (0.15) is smaller than LT1/LT2 (0.2 each) -- its own relative
-    # share must land proportionally smaller, not identical to the other two.
+    # Each LT keeps its own raw xlsx weight (scaled to whole-percent), not
+    # renormalized to sum to 100 across its sibling LTs.
     by_name2 = {a["name"]: a for a in std2["assessments"]}
-    assert by_name2["Setting description"]["weightage"] < by_name2["Sequencing events"]["weightage"]
+    assert by_name2["Sequencing events"]["weightage"] == 20.0
+    assert by_name2["Character traits"]["weightage"] == 20.0
+    assert by_name2["Setting description"]["weightage"] == 15.0
     # Every LT's own FA/SA split is independent of its weight -- always its
     # own 20/80, not scaled down for the smaller LT3.
     for lt in std2["assessments"]:

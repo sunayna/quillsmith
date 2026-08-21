@@ -281,16 +281,27 @@ def parse_subject_block(rows):
                 if child_weights:
                     std["weightage"] = round(sum(child_weights), 6)
 
-    # Assessment/LT weights aren't always expressed relative to their own
-    # standard -- Hindi's LT weights are shares of the whole TOPIC (they
-    # only sum to 1.0 across all of a topic's standards combined, not
-    # per-standard), whereas English's "Assessments" weights already sum to
-    # 1.0 within each standard on their own. Renormalizing every standard's
-    # assessments to sum to 100 by ratio handles both conventions
-    # correctly with the same rule, since English's case is already a no-op
-    # under this (0.5/1.0*100 = 50, same as before).
+    # English/Math's "Assessments" convention: FA/SA sitting directly under
+    # a Standard are shares of THAT standard specifically, and should sum
+    # to 100 within it. Renormalizing by ratio handles the case where they
+    # were entered as fractions (0.2/0.8) rather than already-scaled
+    # percentages, as a no-op when they're already percentages (50/50 stays
+    # 50/50).
+    #
+    # CONFIRMED live, 2026-08-21 (Grade VI-A Hindi): this must NOT touch
+    # Hindi's LT entries, even though they sit in this same std["assessments"]
+    # list -- an LT's own weight is meant to be its raw xlsx value (20, 20,
+    # 15) relative to the whole STANDARD (which itself derives as their sum,
+    # e.g. 55 -- see the derivation below), not renormalized to sum to 100
+    # the way flat English/Math leaves are. Applying this to LTs inflated a
+    # 15%-weighted LT to read 27.27%, contradicting the sheet directly.
+    # Detected by whether an entry carries its own nested "assessments" --
+    # only true leaves (no nested list) ever get renormalized here; an
+    # entry with real nested children is an LT, left exactly as parsed.
     for topic in topics.values():
         for std in topic["standards"]:
+            if any(a.get("assessments") for a in std["assessments"]):
+                continue
             weighted = [a for a in std["assessments"] if a["weightage"] is not None]
             total = sum(a["weightage"] for a in weighted)
             if total > 0:
@@ -335,6 +346,20 @@ def parse_subject_block(rows):
             for std in topic["standards"]:
                 if std["weightage"] is not None and std["weightage"] <= 1.5:
                     std["weightage"] = round(std["weightage"] * 100, 4)
+
+    # An LT's own weight is deliberately NOT renormalized to sum-to-100
+    # above (see that block's own comment) -- it still needs the same
+    # fraction -> whole-percentage scaling every other level gets, just
+    # applied directly rather than via renormalization, since Hindi's real
+    # sheet stores it as a percentage-formatted cell (0.2 for "20%", not
+    # 20 -- confirmed live, 2026-08-21). Scoped to entries that carry their
+    # own nested assessments (LTs specifically) so a true leaf's already-
+    # renormalized 0-100 value is never touched twice.
+    for topic in topics.values():
+        for std in topic["standards"]:
+            for a in std["assessments"]:
+                if a.get("assessments") and a["weightage"] is not None and a["weightage"] <= 1.5:
+                    a["weightage"] = round(a["weightage"] * 100, 4)
 
     # A Topic ("PROJECT N:" in Module's own convention) with no Topic
     # Weightage of its own -- confirmed live, 2026-08-21 -- has no signal
