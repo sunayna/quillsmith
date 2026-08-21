@@ -37,6 +37,14 @@ MARKS_LABEL_RE = re.compile(r'^marks$', re.I)
 WEIGHTAGE_STD_LABEL_RE = re.compile(r'^weightage\s*standard$', re.I)
 LT_LABEL_RE = re.compile(r'^lt\s*\d+$', re.I)
 
+# Column headers for a Topic/Standard's own weight -- NOT the same text as
+# WEIGHTAGE_STD_LABEL_RE above (that's a row label, "Weightage Standard",
+# for an FA/SA split; these are column headers, "Standard Weightage" /
+# "Topic Weightage", opposite word order, sitting once per subject in that
+# subject's own header row).
+HEADER_STD_WEIGHT_RE = re.compile(r'^standard\s*weightage$', re.I)
+HEADER_TOPIC_WEIGHT_RE = re.compile(r'^topic\s*weightage$', re.I)
+
 # Any row whose column A matches one of these is a structural row, never a
 # subject header -- even when column B happens to be empty on that row
 # (e.g. an "Assessments" row with only an "SA" label in column C and
@@ -74,6 +82,63 @@ def first_number(*vals):
     return None
 
 
+def find_weight_columns(rows):
+    """Scans one subject's rows for its own header row (e.g. "Standard |
+    ... | Standard Weightage | Topic Weightage") to find which columns
+    those two labels actually sit in for THIS subject.
+
+    CONFIRMED live, 2026-08-21 (Grade VII Expedition): these are NOT
+    reliably at columns C/D -- a subject with more assessment columns
+    (Expedition's SA1-SA4, 4 wide) pushes them further right (Standard
+    Weightage at F, Topic Weightage at G in that sheet). Reading fixed
+    columns C/D meant both were invisible entirely: Topic Weightage
+    (0.7/0.3, explicitly given) was never seen, and the topic-weight-
+    derivation fallback (see its own comment) had no standard-level
+    weight to derive from either (Standard 1's own weight is ALSO only
+    implicit, as the sum of its 4 assessments) -- both projects silently
+    fell back to an arbitrary clone template's weight instead, landing on
+    the same wrong value for both (reading as "100% each" instead of the
+    real 70/30 split).
+
+    Returns (std_col, topic_col), either of which may be None if that
+    label wasn't found in the header row at all (some subjects, e.g. an
+    older Module sheet, never give Topic Weightage explicitly and rely
+    entirely on derivation -- a missing column here must stay a genuine
+    "nothing to read", not silently default to a column that isn't
+    actually this label). Falls back to the historical (2, 3) only when no
+    header row with either label is found anywhere in the block, matching
+    every subject shape confirmed before this fix existed.
+    """
+    for row in rows:
+        std_col = None
+        topic_col = None
+        for idx, cell in enumerate(row):
+            if not isinstance(cell, str):
+                continue
+            text = cell.strip()
+            if HEADER_STD_WEIGHT_RE.match(text):
+                std_col = idx
+            elif HEADER_TOPIC_WEIGHT_RE.match(text):
+                topic_col = idx
+        if std_col is not None or topic_col is not None:
+            # CONFIRMED live, 2026-08-21 (Grade VI Math): the two headers
+            # sit in adjacent columns in every confirmed sheet shape
+            # (Standard Weightage immediately followed by Topic Weightage),
+            # but some subjects' header row only actually labels ONE of
+            # them even though a real value sits right next to it (Math:
+            # "Standard Weightage" labeled at column C, but D -- which
+            # holds the real 0.75/0.25 topic weights -- has no header text
+            # at all). Inferring the missing one from that adjacency
+            # rather than treating it as "no column at all" is what makes
+            # those still-real values readable.
+            if std_col is not None and topic_col is None:
+                topic_col = std_col + 1
+            elif topic_col is not None and std_col is None:
+                std_col = topic_col - 1
+            return std_col, topic_col
+    return 2, 3
+
+
 def row_mark_entry_mode(cell):
     """Decides ONE assessment's mode from ITS OWN Marks-row cell only --
     "grade"/"rubric"/"EMPS" mentioned there means grade mode; anything else
@@ -99,6 +164,7 @@ def parse_subject_block(rows):
     lt_run_length = 0
     raw_topic_weightages = []  # for scale detection
     raw_standard_weightages = []
+    std_weight_col, topic_weight_col = find_weight_columns(rows)
 
     i = 1  # skip the subject-name row itself
     while i < len(rows):
@@ -107,6 +173,8 @@ def parse_subject_block(rows):
         b = row[1] if len(row) > 1 else None
         c = row[2] if len(row) > 2 else None
         d = row[3] if len(row) > 3 else None
+        std_weight_val = row[std_weight_col] if std_weight_col is not None and std_weight_col < len(row) else None
+        topic_weight_val = row[topic_weight_col] if topic_weight_col is not None and topic_weight_col < len(row) else None
 
         if a == "" and b is None:
             i += 1
@@ -117,7 +185,7 @@ def parse_subject_block(rows):
             # the actual rule, only a leaf FA/SA's own Marks cell can ever
             # indicate "grade"; every other level defaults to "score".
             topic_name = b.strip()
-            weight = first_number(d, c)
+            weight = first_number(topic_weight_val, std_weight_val)
             current_topic = {"name": topic_name, "weightage": weight, "mark_entry_mode": "score", "standards": []}
             topics[topic_name] = current_topic
             current_standard = None
@@ -129,7 +197,7 @@ def parse_subject_block(rows):
             # signal only ever applies to an individual leaf FA/SA, not the
             # standard as a whole (a standard can have one numeric and one
             # EMPS assessment beneath it at the same time).
-            weight = first_number(c, d)
+            weight = first_number(std_weight_val, topic_weight_val)
             current_standard = {"name": b.strip(), "weightage": weight, "mark_entry_mode": "score", "assessments": []}
             current_standard_row_index = i
             current_lt_row_index = None
