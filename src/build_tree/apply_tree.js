@@ -860,24 +860,21 @@ async function main() {
   }
 
   const target = parseTreeXlsx(absTreePath, grade, subjectFilter || undefined);
-  // SEL's real topic/standard content lives in a linked ReportPlan this
-  // script can't read or write (confirmed live, both Academic and SEN) --
-  // every run on it either does nothing (NO TEMPLATE AVAILABLE) or, worse,
-  // wipes/recreates empty topic shells with no way to add real standards.
-  // Skipping it here until there's a working approach for that plan,
-  // rather than repeatedly running a subject that can't actually succeed.
-  //
-  // CONFIRMED live, 2026-08-20 (Grade VII-B, 2026-27 Term 1): applying
-  // SEL's plan deleted its linked-ReportPlan wrapper node and replaced its
-  // 4 real leaf standards with new topic/standard shells one level too
-  // shallow -- exactly the "wipes/recreates empty shells" failure mode
-  // described above. No marks had been entered yet so nothing was lost;
-  // fixed manually in reportbee's own UI afterward. readLiveTree now
-  // detects that wrapper via its `linked_nodes` field and never queues it
-  // for deletion (see readLiveTree's own comment) -- INCLUDE_SEL re-added
-  // here to test that fix, deliberately against a fresh section (VII-C)
-  // that's never been touched, not VII-B/VII-A again.
-  const SKIP_SUBJECTS = process.env.INCLUDE_SEL ? [] : ['sel'];
+  // SEL used to be hardcoded here -- its real topic/standard content lives
+  // in a linked ReportPlan, and applying its plan once (Grade VII-B,
+  // 2026-08-20) deleted that link's wrapper node and replaced its real
+  // leaf standards with shallower shells, since readLiveTree assumed any
+  // course_paper wrapper was a redundant pass-through. Fixed by detecting
+  // the wrapper via its `linked_nodes` field instead of guessing from node
+  // type alone (see readLiveTree's own comment), and by never letting a
+  // standing category (Work Ethics-like nodes) get used as a clone
+  // template (see findTopicTemplate). Verified against VII-C end to end
+  // afterward -- SEL runs through the normal path now like every other
+  // subject, no special-casing left here. A section with no intact SEL
+  // structure to clone from yet (no existing standard anywhere under it)
+  // still can't originate one from nothing -- that's a data problem for
+  // that section, not something this list should paper over again.
+  const SKIP_SUBJECTS = [];
   const subjects = Object.keys(target).filter(name => {
     if (SKIP_SUBJECTS.includes(name.toLowerCase())) {
       console.log(`\n=== ${name} ===\n⏭️  Skipped (known limitation -- see SKIP_SUBJECTS comment above).`);
@@ -991,7 +988,7 @@ module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, saveStructureTwoPhase, guessTermLabel, guessYearLabel,
   findDefaultTreeFile, currentGradeSectionLabel, assertOnGradeSection,
-  SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
+  SKIP_SUBJECTS: [],
 };
 
 if (require.main === module) {
