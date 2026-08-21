@@ -327,11 +327,20 @@ async function readLiveTree(page, ctx, subjectUuid) {
   // real topics), but new topics get created as ITS children (via
   // protectedParentUuid, below), not the subject's, and the wrapper node
   // itself is never touched by anything downstream.
+  // CONFIRMED live, 2026-08-21 (Grade VI-A): the linked_nodes check above
+  // only ever ran when `ref.hasChildren` was already true, so a wrapper
+  // that legitimately exists but hasn't had its topics (re)created yet
+  // (e.g. right after a manual partial rebuild in reportbee's own UI) fell
+  // through to the plain `else` branch below -- treated as an ordinary,
+  // unmatched topic, queued for deletion, with new topics created directly
+  // under the subject instead of under it. Checking type alone (not type
+  // + hasChildren) closes that gap: an empty wrapper still gets its
+  // linked_nodes checked and protected, it just has nothing to unwrap yet.
   const wrapperUuidsToDelete = [];
   let protectedParentUuid = null;
   const unwrapped = [];
   for (const ref of topicRefs) {
-    if (ref.type === 'course_paper' && ref.hasChildren) {
+    if (ref.type === 'course_paper') {
       const wrapperFull = await fetchFullNode(page, ctx, ref.uuid);
       const isLinked = !!(wrapperFull && Array.isArray(wrapperFull.linked_nodes) && wrapperFull.linked_nodes.length > 0);
       if (isLinked) {
@@ -340,7 +349,9 @@ async function readLiveTree(page, ctx, subjectUuid) {
       } else {
         wrapperUuidsToDelete.push(ref.uuid);
       }
-      unwrapped.push(...await domChildrenOfUuid(page, ref.uuid));
+      if (ref.hasChildren) {
+        unwrapped.push(...await domChildrenOfUuid(page, ref.uuid));
+      }
     } else {
       unwrapped.push(ref);
     }
