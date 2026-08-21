@@ -94,6 +94,9 @@ def parse_subject_block(rows):
     current_topic = None
     current_standard = None
     current_standard_row_index = None
+    current_lt_row_index = None
+    current_lt_entry = None
+    lt_run_length = 0
     raw_topic_weightages = []  # for scale detection
     raw_standard_weightages = []
 
@@ -129,6 +132,9 @@ def parse_subject_block(rows):
             weight = first_number(c, d)
             current_standard = {"name": b.strip(), "weightage": weight, "mark_entry_mode": "score", "assessments": []}
             current_standard_row_index = i
+            current_lt_row_index = None
+            current_lt_entry = None
+            lt_run_length = 0
             current_topic["standards"].append(current_standard)
             if weight is not None:
                 raw_standard_weightages.append(weight)
@@ -139,26 +145,66 @@ def parse_subject_block(rows):
             # rows carry weight, and they act as that standard's actual
             # assessment leaves (matching how the live tree names leaf
             # nodes "LT1"/"LT2" directly under a Standard with no separate
-            # named "Assessments" row at all).
+            # named "Assessments" row at all). Tracked here (row index +
+            # the entry itself) so an Assessments block immediately
+            # following THIS row can be recognized as this LT's own FA/SA
+            # breakdown below, rather than silently dropped. lt_run_length
+            # counts consecutive LT rows since the last Standard row or
+            # processed Assessments block -- confirmed live, both real
+            # shapes exist: most LTs get their own immediately-following
+            # Assessments block (lt_run_length stays 1 at that point), but
+            # occasionally two LTs share one trailing block with nothing in
+            # between (confirmed: G7's Standard 7, LT1+LT2 then one shared
+            # FA/SA) -- genuinely ambiguous which LT it belongs to, so that
+            # case is deliberately left alone rather than guessed at (see
+            # the Assessments branch below).
             weight = first_number(c, d)
-            current_standard["assessments"].append({
+            current_lt_entry = {
                 "name": b.strip(),
                 "weightage": weight,
                 "max_score": None,
                 "mark_entry_mode": "score",
-            })
+            }
+            current_standard["assessments"].append(current_lt_entry)
+            current_lt_row_index = i
+            lt_run_length += 1
 
         elif (ASSESSMENTS_LABEL_RE.match(a) and current_standard is not None
-                and i == current_standard_row_index + 1):
-            # Only treat this as THIS standard's own assessment split when it
-            # immediately follows the Standard row (English/Math's
-            # convention). Hindi instead puts LT rows in between and this
-            # trailer only once per whole TOPIC at the end -- that's a
-            # topic-level FA/SA split, not this standard's, so it's
-            # deliberately not attached to anything here when it isn't
-            # adjacent (confirmed live: attaching it to whatever standard
-            # happened to be "current" inflated that standard's weight
-            # past 100%).
+                and (i == current_standard_row_index + 1
+                     or (current_lt_row_index is not None and i == current_lt_row_index + 1 and lt_run_length == 1))):
+            # Two positions recognized as THIS standard's own assessment
+            # split, not a topic-wide trailer to leave alone: immediately
+            # after the Standard row (English/Math's convention), or
+            # immediately after an LT row -- confirmed live in the 2026-27
+            # Hindi sheet, once per standard (not once per topic the way an
+            # older Hindi workbook did it -- that "topic trailer" shape, if
+            # it still exists elsewhere, is still correctly left alone
+            # since it won't be adjacent to either row here).
+            #
+            # When it's the LT-adjacent case, the LT row was just a
+            # placeholder for "this standard has one learning target" --
+            # its real composition is the FA/SA split found here, which
+            # replaces (not supplements) that placeholder entry so the
+            # standard doesn't end up triple-counted (LT weight + FA + SA
+            # all coexisting, summing to well over 100%). lt_scale (this
+            # LT's own weight, e.g. 0.2) is kept even after removing the
+            # placeholder -- confirmed live: a standard can have several
+            # LTs, each with its own weight AND its own FA/SA split (e.g.
+            # LT1=0.2, LT2=0.2, LT3=0.15, each 20/80 FA/SA) -- FA/SA are
+            # shares of THEIR OWN LT, not flat siblings across the whole
+            # standard, so each one's real weight is lt_scale * its own
+            # fraction (0.2 * 0.2 = 0.04), not the bare fraction alone.
+            # Applying it here means the later "renormalize a standard's
+            # assessments to sum to 100" step (which doesn't know about
+            # LTs at all) still lands correctly across every LT's pairs
+            # combined.
+            lt_scale = None
+            if (current_lt_row_index is not None and i == current_lt_row_index + 1
+                    and lt_run_length == 1 and current_lt_entry in current_standard["assessments"]):
+                lt_scale = current_lt_entry["weightage"]
+                current_standard["assessments"].remove(current_lt_entry)
+                current_lt_entry = None
+            lt_run_length = 0
             marks_row = rows[i + 1] if i + 1 < len(rows) else None
 
             # Assessment names, their "Marks" (out-of score), and their
@@ -192,7 +238,8 @@ def parse_subject_block(rows):
                     # compact-text convention, so mode defaults to "score"
                     # (the deterministic default per the actual rule) rather
                     # than guessing.
-                    current_standard["assessments"].append({"name": name, "weightage": float(pct), "max_score": None, "mark_entry_mode": "score"})
+                    w = float(pct) * lt_scale if lt_scale is not None else float(pct)
+                    current_standard["assessments"].append({"name": name, "weightage": w, "max_score": None, "mark_entry_mode": "score"})
             else:
                 weights = []
                 if weight_row:
@@ -209,9 +256,12 @@ def parse_subject_block(rows):
                     name = name.strip()
                     w = weights[col_idx - 1] if col_idx - 1 < len(weights) else None
                     m = marks[col_idx - 1] if col_idx - 1 < len(marks) else None
+                    w_final = float(w) if isinstance(w, (int, float)) else None
+                    if w_final is not None and lt_scale is not None:
+                        w_final *= lt_scale
                     current_standard["assessments"].append({
                         "name": name,
-                        "weightage": float(w) if isinstance(w, (int, float)) else None,
+                        "weightage": w_final,
                         "max_score": float(m) if isinstance(m, (int, float)) else None,
                         # Decided per-assessment from THIS assessment's own
                         # Marks cell only -- "grade"/"rubric"/"EMPS" mentioned
@@ -219,6 +269,15 @@ def parse_subject_block(rows):
                         # number, or nothing) means score.
                         "mark_entry_mode": row_mark_entry_mode(m),
                     })
+
+        elif ASSESSMENTS_LABEL_RE.match(a):
+            # An Assessments row that matched neither recognized position
+            # above (e.g. two-or-more LTs sharing one trailing block, with
+            # nothing resetting the run in between) -- deliberately left
+            # unattached to anything (see the branch above), but still
+            # resets the LT run count so it doesn't keep accumulating into
+            # a later, genuinely single LT within the same standard.
+            lt_run_length = 0
 
         i += 1
 

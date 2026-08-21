@@ -218,17 +218,18 @@ def test_topic_always_defaults_to_score_regardless_of_content():
 
 
 def test_trailing_assessments_row_not_adjacent_is_ignored():
-    """Hindi's topic-level FA/SA trailer sits after LT rows, i.e. NOT
-    immediately after the Standard row -- it must not be misattached to
-    whichever standard happened to be 'current', which would inflate that
-    standard's weight past 100%."""
+    """Two LTs sharing one trailing FA/SA block with nothing resetting the
+    run in between (confirmed live: G7 Hindi's Standard 7, LT1+LT2 then one
+    shared block) is genuinely ambiguous which LT it belongs to -- must not
+    be guessed at, which would inflate one LT's weight past its real share
+    or silently drop the other."""
     rows = [
         ("Hindi", None, None, None),
         ("Topic Name", "Vyakaran", None, None),
         ("Standard 1", "Reading", None, None),
         ("LT1", "Fluency", 0.3, None),
         ("LT2", "Comprehension", 0.7, None),
-        ("Assessments", "FA", "SA", None),  # topic-level trailer, not adjacent
+        ("Assessments", "FA", "SA", None),  # shared trailer, ambiguous
         ("Marks", 20, 20, None),
         ("Weightage Standard", 40, 60, None),
     ]
@@ -237,6 +238,58 @@ def test_trailing_assessments_row_not_adjacent_is_ignored():
     names = {a["name"] for a in std["assessments"]}
     assert names == {"Fluency", "Comprehension"}
     assert std["weightage"] == 100.0
+
+
+def test_single_lt_assessments_replace_and_scale():
+    """Confirmed live (G6 Hindi, Standard 1 and 2): when exactly one LT is
+    immediately followed by its own Assessments block, that block replaces
+    the LT's own placeholder entry with its real FA/SA composition -- and
+    when a standard has several LTs each with their own such block, each
+    FA/SA pair is scaled by its own LT's share (not treated as flat
+    siblings across the whole standard), so a smaller LT's pair ends up
+    proportionally smaller too."""
+    rows = [
+        ("Hindi", None, None, None),
+        ("Topic Name", "Shravan", None, None),
+        ("Standard 1", "Listening for facts", None, None),
+        ("LT1", "Fact gathering", 0.2, None),
+        ("Assessments", "FA", "SA", None),
+        ("Marks", "Grade", "Grade", None),
+        ("Weightage Standard", 0.2, 0.8, None),
+        ("Standard 2", "Story elements", None, None),
+        ("LT1", "Sequencing events", 0.2, None),
+        ("Assessments", "FA", "SA", None),
+        ("Marks", "Grade", "Grade", None),
+        ("Weightage Standard", 0.2, 0.8, None),
+        ("LT2", "Character traits", 0.2, None),
+        ("Assessments", "FA", "SA", None),
+        ("Marks", "Grade", "Grade", None),
+        ("Weightage Standard", 0.2, 0.8, None),
+        ("LT3", "Setting description", 0.15, None),
+        ("Assessments", "FA", "SA", None),
+        ("Marks", "Grade", "Grade", None),
+        ("Weightage Standard", 0.2, 0.8, None),
+    ]
+    result = parse_subject_block(rows)
+    topic = result["Shravan"]
+
+    std1 = topic["standards"][0]
+    assert std1["weightage"] == 20.0
+    names1 = {a["name"] for a in std1["assessments"]}
+    assert names1 == {"FA", "SA"}
+    by_name1 = {a["name"]: a for a in std1["assessments"]}
+    assert by_name1["FA"]["weightage"] == pytest.approx(20.0)
+    assert by_name1["SA"]["weightage"] == pytest.approx(80.0)
+
+    std2 = topic["standards"][1]
+    assert std2["weightage"] == pytest.approx(55.0)  # 0.2 + 0.2 + 0.15, scaled to whole percent
+    assert len(std2["assessments"]) == 6  # 3 LTs x (FA, SA), no leftover LT placeholders
+    total = sum(a["weightage"] for a in std2["assessments"])
+    assert total == pytest.approx(100.0)
+    # LT3 (0.15) is smaller than LT1/LT2 (0.2 each) -- its FA/SA pair must
+    # land proportionally smaller, not identical to the other two.
+    fa_weights = sorted(a["weightage"] for a in std2["assessments"] if a["name"] == "FA")
+    assert fa_weights[0] < fa_weights[1]
 
 
 # ---------------------------------------------------------------------------
