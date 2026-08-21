@@ -293,6 +293,7 @@ async function runTreePipeline(job) {
       throw new Error(`"${job.gradeSection}" isn't a valid Grade & Section — expected e.g. "VII A" with grade one of ${VALID_GRADES.join(', ')}`);
     }
     job.grade = grade;
+    job.gradeSectionLabel = `${grade} ${section}`;
 
     await withCapturedConsole(job, async () => {
       job.log('Connecting to reportbee...');
@@ -353,6 +354,7 @@ async function advanceToNextSubject(job) {
       const page = job.page;
       job.log(`=== ${subjectName} ===`);
 
+      await treeLib.assertOnGradeSection(page, job.gradeSectionLabel, `before processing "${subjectName}"`);
       const liveName = await treeLib.navigateToSubject(page, job.term, subjectName);
       if (!liveName) {
         job.log(`Could not find "${subjectName}" under Term "${job.term}".`);
@@ -420,6 +422,12 @@ async function applySubjectDecision(job, action) {
       const deleteUuids = plan.deletes.flatMap((d) => [d.uuid, ...(d.children || [])]);
       const changes = { update: updates, delete: deleteUuids, copy_marks: [] };
 
+      // The plan was computed earlier (possibly while the reviewer sat on
+      // the awaiting-subject-decision dialog for a while) -- re-verify the
+      // page hasn't drifted to a different section in the meantime before
+      // actually saving. See assertOnGradeSection's own comment for why
+      // this matters: this tab is a real, interactive browser window.
+      await treeLib.assertOnGradeSection(job.page, job.gradeSectionLabel, `immediately before saving "${subjectName}"`);
       const result = await treeLib.saveStructure(job.page, ctx, changes);
       if (result.json && result.json.status) {
         job.log(`✅ ${subjectName}: ${result.json.message || 'applied'}`);

@@ -73,6 +73,31 @@ function normalize(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, '');
 }
 
+// Cheap, reliable "what grade/section is this tab actually on right now"
+// check -- the same signal switchGradeSection's own "already there"
+// shortcut uses. reportbee's tab is a real, interactive browser window
+// (not a sandboxed automation-only session), so a stray click -- ours or
+// a person's -- can navigate it to a different section mid-run with
+// nothing in between throwing an exception; the wipe-and-rebuild write
+// that follows would then silently target the wrong section's tree.
+// CONFIRMED live, 2026-08-21 (Grade VI, reproducible): this happened for
+// real partway through a run, consistently right around a subject
+// (Hindi) that needs the deeper "check inside each Assessment-level
+// grouping" search in navigateToSubject below.
+async function currentGradeSectionLabel(page) {
+  return page.evaluate(() => document.querySelector('a.all-standards-link')?.textContent.trim() || null);
+}
+
+async function assertOnGradeSection(page, expectedLabel, context) {
+  const actual = await currentGradeSectionLabel(page);
+  if (actual !== expectedLabel) {
+    throw new Error(
+      `Section drift detected${context ? ` (${context})` : ''}: expected to still be on "${expectedLabel}" `
+      + `but the page is now on "${actual}". Aborting rather than risk writing to the wrong section.`
+    );
+  }
+}
+
 // Alias-aware subject-name comparison (xlsx header vs. reportbee's live
 // tree label -- e.g. "SEL" vs. "Social Emotional Learning") lives in
 // extract.js as subjectMatches, imported above -- extract.js's own
@@ -181,6 +206,7 @@ async function domChildrenOfUuid(page, uuid) {
 // year is already active (via the header dropdown) — this doesn't call
 // switchYear.
 async function navigateToSubject(page, termLabel, subjectName) {
+  const DBG = !!process.env.DEBUG_TREE;
   const candidates = [subjectName, ...(SUBJECT_ALIASES[subjectName.toLowerCase()] || [])];
 
   // Fast path: already expanded/visible from earlier in this session.
@@ -222,7 +248,15 @@ async function navigateToSubject(page, termLabel, subjectName) {
     if (!assessmentChild.hasChildren) continue;
     const assessmentDomLabel = await findFullLabel(page, assessmentChild.name);
     if (!assessmentDomLabel) continue;
+    if (DBG) {
+      const before = await currentGradeSectionLabel(page);
+      console.log(`  [dbg] expanding "${assessmentDomLabel}" while searching for "${subjectName}" (on "${before}")`);
+    }
     await ensureExpanded(page, assessmentDomLabel);
+    if (DBG) {
+      const after = await currentGradeSectionLabel(page);
+      console.log(`  [dbg] after expanding "${assessmentDomLabel}", now on "${after}"`);
+    }
     const subChildren = await getChildrenFromData(page, assessmentDomLabel);
     for (const child of subChildren) {
       if (candidates.some(name => subjectMatches(child.name, name))) return child.name;
@@ -668,6 +702,7 @@ async function main() {
   if (!VALID_GRADES.includes(grade.toUpperCase())) {
     throw new Error(`"${grade}" isn't a recognized grade (expected one of ${VALID_GRADES.join(', ')}) — check you answered the "Grade & Section" prompt and not a later one.`);
   }
+  const gradeSectionLabel = `${grade} ${section}`;
 
   // Paths pasted from a shell (e.g. tab-completed, with spaces backslash-escaped
   // or the whole thing quoted) are common here since this isn't itself a shell
@@ -752,6 +787,7 @@ async function main() {
 
   for (const subjectName of subjects) {
     console.log(`\n=== ${subjectName} ===`);
+    await assertOnGradeSection(page, gradeSectionLabel, `before processing "${subjectName}"`);
     const liveName = await navigateToSubject(page, termLabel, subjectName);
     if (!liveName) {
       console.warn(`⚠️  Could not find "${subjectName}" under Term "${termLabel}" (checked directly under the Term and inside each Assessment-level grouping).`);
@@ -817,6 +853,7 @@ async function main() {
     const deleteUuids = plan.deletes.flatMap(d => [d.uuid, ...(d.children || [])]);
     const changes = { update: updates, delete: deleteUuids, copy_marks: [] };
 
+    await assertOnGradeSection(page, gradeSectionLabel, `immediately before saving "${subjectName}"`);
     const result = await saveStructure(page, ctx, changes);
     console.log('Response status:', result.status);
     if (result.json) {
@@ -836,7 +873,8 @@ async function main() {
 module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
-  findDefaultTreeFile, SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
+  findDefaultTreeFile, currentGradeSectionLabel, assertOnGradeSection,
+  SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
 };
 
 if (require.main === module) {
