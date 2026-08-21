@@ -90,7 +90,11 @@ def test_mode_is_read_per_assessment_not_per_subject():
 def test_lt_rows_derive_standard_weight_from_children():
     """Hindi convention: the Standard row itself carries no weight, only its
     LT children do; the standard's weight must be derived as their sum, then
-    correctly scaled from fraction to whole-percentage."""
+    correctly scaled from fraction to whole-percentage. The Topic itself
+    also carries no weight here -- with its one Standard fully accounting
+    for the weight, the topic derives its own weight as that same sum too
+    (see test_topic_weight_derives_from_standards for the more realistic
+    multi-standard case this rule actually exists for)."""
     rows = [
         ("Hindi", None, None, None),
         ("Topic Name", "Vyakaran", None, None),
@@ -100,7 +104,7 @@ def test_lt_rows_derive_standard_weight_from_children():
     ]
     result = parse_subject_block(rows)
     topic = result["Vyakaran"]
-    assert topic["weightage"] is None
+    assert topic["weightage"] == 100.0
 
     std = topic["standards"][0]
     assert std["weightage"] == 100.0
@@ -109,6 +113,27 @@ def test_lt_rows_derive_standard_weight_from_children():
     assert by_name["Fluency"]["weightage"] == 30.0
     assert by_name["Comprehension"]["weightage"] == 70.0
     assert by_name["Fluency"]["mark_entry_mode"] == "score"
+
+
+def test_topic_weight_derives_from_standards():
+    """Module convention: a "PROJECT N:" topic with no Topic Weightage of
+    its own, but standards beneath it that do carry real weights (stored as
+    fractions, the way a percentage-formatted xlsx cell actually holds
+    them) -- confirmed live against a real workbook (Grade VI Expedition):
+    the topic's weight must derive as the sum of its own standards',
+    computed AFTER those standards are themselves scaled from fraction to
+    whole-percentage, not before."""
+    rows = [
+        ("Module", None, None, None),
+        ("PROJECT 1:", "Aravalli Hills", None, None),
+        ("Standard 1:", "Water bodies", None, 0.2),
+        ("Standard 2:", "Rock cycle", None, 0.25),
+    ]
+    result = parse_subject_block(rows)
+    topic = result["Aravalli Hills"]
+    assert topic["weightage"] == 45.0
+    assert topic["standards"][0]["weightage"] == 20.0
+    assert topic["standards"][1]["weightage"] == 25.0
 
 
 def test_text_weight_pair_format():

@@ -275,6 +275,27 @@ def parse_subject_block(rows):
                 if std["weightage"] is not None and std["weightage"] <= 1.5:
                     std["weightage"] = round(std["weightage"] * 100, 4)
 
+    # A Topic ("PROJECT N:" in Module's own convention) with no Topic
+    # Weightage of its own -- confirmed live, 2026-08-21 -- has no signal
+    # in apply_tree.js for its intended weight either, so it silently fell
+    # back to an arbitrary clone template's weight instead (every topic
+    # created in one run clones from the same template, so they all landed
+    # on that one value, reading as "split equally" even though nothing
+    # was actually computed that way). Derived here as the sum of its own
+    # standards' weights instead, the same rule already used above for a
+    # standard with no weight of its own -- a Module topic missing its own
+    # weightage but with fully-weighted standards beneath it (confirmed:
+    # Aravalli Hills 20+25, Crisis to Care 25+10, Crisis Beneath the
+    # Concrete 20) is exactly that case. Deliberately last, after both
+    # scale-normalization branches above: this sums each standard's
+    # *final* percentage-scale weight, not its possibly-still-fractional
+    # raw one, so the derived topic weight never needs scaling of its own.
+    for topic in topics.values():
+        if topic["weightage"] is None and topic["standards"]:
+            child_weights = [s["weightage"] for s in topic["standards"] if s["weightage"] is not None]
+            if child_weights:
+                topic["weightage"] = round(sum(child_weights), 6)
+
     return topics
 
 
