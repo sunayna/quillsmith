@@ -489,6 +489,17 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
     should_convert: true,
     mark_entry_mode: mode || template.mark_entry_mode,
     max_score: targetAsm.max_score != null ? targetAsm.max_score : template.max_score,
+    // Forced explicitly rather than inherited from the template, same as
+    // createTopic already does (see its own comment) -- CONFIRMED live,
+    // 2026-08-21 (Grade VI-A English): that topic-level fix alone wasn't
+    // enough. Two of three real standards under a correctly-fixed topic
+    // still showed use_for_aggregation: false, because createStandard and
+    // createAssessment never got the same explicit override -- only
+    // createTopic did. Every leaf this function creates is real
+    // curricular content by construction; nothing at this level is ever
+    // a standing category.
+    use_for_aggregation: true,
+    use_for_total: true,
   });
   return { node, label: `[assessment, created] "${targetAsm.name}" (weight ${targetAsm.weightage}, out of ${node.max_score})` };
 }
@@ -524,6 +535,12 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
     conversion_score: targetStd.weightage != null ? targetStd.weightage : template.conversion_score,
     should_convert: true,
     mark_entry_mode: targetStd.mark_entry_mode || template.mark_entry_mode,
+    // See createAssessment's comment on the same override -- CONFIRMED
+    // live, 2026-08-21 (Grade VI-A English): standards need this just as
+    // much as topics do, not inherited from whatever template happened
+    // to be picked.
+    use_for_aggregation: true,
+    use_for_total: true,
   });
   creates[uuid] = node;
   labels.push(`[standard, created] "${targetStd.name}" (weight ${targetStd.weightage}) with ${childUuids.length} assessment(s)`);
@@ -627,19 +644,26 @@ function numsClose(a, b) {
   return Math.abs(a - b) < WEIGHT_EPSILON;
 }
 
-function assessmentsMatch(liveAssessments, targetAssessments) {
-  if (liveAssessments.length !== targetAssessments.length) return false;
-  const liveByName = new Map(liveAssessments.map(a => [a.name, a]));
-  for (const targetAsm of targetAssessments) {
-    const liveAsm = liveByName.get(targetAsm.name);
-    if (!liveAsm) return false;
-    if (!numsClose(liveAsm.conversion_score, targetAsm.weightage)) return false;
-    if (!numsClose(liveAsm.max_score, targetAsm.max_score)) return false;
-    if (targetAsm.mark_entry_mode && liveAsm.mark_entry_mode !== targetAsm.mark_entry_mode) return false;
-  }
-  return true;
-}
-
+// use_for_aggregation/use_for_total checked here for the same reason
+// topicUnchanged checks it one level up: CONFIRMED live, 2026-08-21
+// (Grade VI-A English) -- a standard created before createStandard forced
+// this explicitly (see its own comment) can have exactly the right weight
+// otherwise, reading as "unchanged" and staying invisible to a re-run
+// forever without this.
+//
+// Deliberately does NOT compare assessments at all -- readLiveTree can
+// never populate a live standard's real assessment children (hardcoded to
+// [] there; see its own comment on why), so a standard with any real
+// target assessments would otherwise ALWAYS read as "changed" purely from
+// the length mismatch (0 live vs N target), regardless of whether
+// anything about it actually differs. CONFIRMED live, 2026-08-21: this
+// silently made the whole "leave unchanged topics alone" feature a no-op
+// for every subject with assessment-level structure (Math, English,
+// Digital Literacy, ...) -- only assessment-less subjects like SEL ever
+// actually got left alone. Comparing what can never be read isn't a
+// stricter check, it's just always-false; the diff granularity here has
+// to stop at the standard level, matching what readLiveTree can actually
+// see.
 function standardsMatch(liveStandards, targetStandards) {
   if (liveStandards.length !== targetStandards.length) return false;
   const liveByName = new Map(liveStandards.map(s => [s.name, s]));
@@ -648,7 +672,7 @@ function standardsMatch(liveStandards, targetStandards) {
     if (!liveStd) return false;
     if (!numsClose(liveStd.conversion_score, targetStd.weightage)) return false;
     if (targetStd.mark_entry_mode && liveStd.mark_entry_mode !== targetStd.mark_entry_mode) return false;
-    if (!assessmentsMatch(liveStd.assessments, targetStd.assessments)) return false;
+    if (liveStd.use_for_aggregation !== true || liveStd.use_for_total !== true) return false;
   }
   return true;
 }
