@@ -713,7 +713,20 @@ function standardsMatch(liveStandards, targetStandards) {
 // standing categories out before calling it), so both flags must be true;
 // anything else forces a recreate regardless of whether weight/standards
 // otherwise match.
+// FORCE_REBUILD bypasses every "unchanged" shortcut in this file, treating
+// every topic as needing a full delete+recreate regardless of whether its
+// readable fields already match. Exists because that comparison is
+// fundamentally blind to anything in the unreadable assessment layer
+// (readLiveTree can never see a live standard's real children -- see
+// standardsMatch's own comment): CONFIRMED live, 2026-08-21 (Grade VI-A
+// Hindi) -- a topic whose standard-level weight already matched target
+// (from an earlier, since-fixed run) read as fully "unchanged" and got
+// silently skipped, even though its LTs were still missing their nested
+// FA/SA children underneath (a structural gap the diff has no way to see
+// at all). Not meant for routine use -- only for deliberately re-forcing
+// a subject once, after a bug like that one is confirmed fixed.
 function topicUnchanged(liveTopic, targetTopic) {
+  if (process.env.FORCE_REBUILD) return false;
   if (!numsClose(liveTopic.conversion_score, targetTopic.weightage)) return false;
   if (targetTopic.mark_entry_mode && liveTopic.mark_entry_mode !== targetTopic.mark_entry_mode) return false;
   if (liveTopic.use_for_aggregation !== true || liveTopic.use_for_total !== true) return false;
