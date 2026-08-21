@@ -485,8 +485,20 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
 }
 
 // Builds one new standard node plus its assessment children.
-function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels) {
-  const template = findStandardTemplate(liveTopics, parentUuid);
+// fallbackTemplate (when given) is the topic this standard's own parent
+// was just cloned from -- same pattern createAssessment already uses one
+// level down (see its own comment). CONFIRMED live, 2026-08-21 (Grade
+// VI-A SEL): a topic with genuinely zero standards anywhere else in the
+// subject to clone from (a brand-new SEL wrapper, freshly rebuilt with no
+// prior standards at all) used to report NO TEMPLATE AVAILABLE for every
+// standard, requiring one to be created by hand in reportbee first just
+// to give the script something to copy. A topic-level node is the same
+// underlying reportbee schema as a standard, just sitting one level
+// higher in the tree (the existing type:"assessment" fallback below
+// already relies on that same fact) -- valid to clone from directly
+// rather than failing when nothing more specific exists.
+function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate) {
+  const template = findStandardTemplate(liveTopics, parentUuid) || fallbackTemplate;
   if (!template) { labels.push(`[standard, NO TEMPLATE AVAILABLE] "${targetStd.name}" — skipped, nothing in this subject to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const asmOrder = { n: 0 };
@@ -518,7 +530,7 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
   const childUuids = [];
   for (const targetStd of targetTopic.standards) {
     stdOrder.n += 10;
-    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels);
+    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template);
     if (node) childUuids.push(node.uuid);
   }
   const node = cloneAsNew(template, {
