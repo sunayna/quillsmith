@@ -395,15 +395,26 @@ function cloneAsNew(template, overrides) {
 // Template preference: a sibling in the exact same place in the tree first
 // (so course_id/grade_template_id context matches as closely as possible),
 // falling back to any node of that level anywhere in the subject.
+// CONFIRMED live, 2026-08-21 (Grade VI, Mathematics): this used to return
+// liveTopics[0] unconditionally -- whatever the tree happened to list
+// first, with no check that it wasn't Work Ethics itself. Work Ethics'
+// use_for_aggregation: false / use_for_total: false (the very fields that
+// mark it as a standing, non-curricular category -- see isStandingCategory)
+// got cloned onto every newly created topic that picked it as a template,
+// silently excluding them from the subject's own total. Real, curricular
+// topics created this way stopped counting toward students' grades with
+// no error anywhere. Filtering standing categories out here is the actual
+// fix; isStandingCategory is the same signal buildPlan already uses to
+// decide what NOT to delete, reused here to decide what's safe to clone.
 function findTopicTemplate(liveTopics) {
-  return liveTopics[0] || null;
+  return liveTopics.find(t => !isStandingCategory(t)) || null;
 }
 function findStandardTemplate(liveTopics, preferTopicUuid) {
   if (preferTopicUuid) {
     const t = liveTopics.find(t => t.uuid === preferTopicUuid);
-    if (t && t.standards.length > 0) return t.standards[0];
+    if (t && !isStandingCategory(t) && t.standards.length > 0) return t.standards[0];
   }
-  for (const t of liveTopics) if (t.standards.length > 0) return t.standards[0];
+  for (const t of liveTopics) if (!isStandingCategory(t) && t.standards.length > 0) return t.standards[0];
   // Some subjects' existing "topics" are themselves flat, type:"assessment"
   // nodes directly under the subject rather than type:"regular_paper"
   // wrappers around real standards -- confirmed live in Module/Mathematics/
@@ -415,9 +426,9 @@ function findStandardTemplate(liveTopics, preferTopicUuid) {
   // too rather than reporting no template at all.
   if (preferTopicUuid) {
     const t = liveTopics.find(t => t.uuid === preferTopicUuid);
-    if (t && t.type === 'assessment') return t;
+    if (t && !isStandingCategory(t) && t.type === 'assessment') return t;
   }
-  for (const t of liveTopics) if (t.type === 'assessment') return t;
+  for (const t of liveTopics) if (!isStandingCategory(t) && t.type === 'assessment') return t;
   return null;
 }
 function findNearbyAssessmentTemplate(liveTopics, preferStandardUuid) {
