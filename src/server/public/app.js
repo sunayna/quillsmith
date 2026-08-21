@@ -1,7 +1,6 @@
 const sections = {
   form: document.getElementById('form-section'),
   'tree-form': document.getElementById('tree-form-section'),
-  'tree-subject': document.getElementById('tree-subject-section'),
   log: document.getElementById('log-section'),
   reference: document.getElementById('reference-section'),
   done: document.getElementById('done-section'),
@@ -12,6 +11,51 @@ function show(...names) {
   for (const [name, el] of Object.entries(sections)) {
     el.classList.toggle('hidden', !names.includes(name));
   }
+  // The subject-review dialog is a <dialog>, not a toggled card -- any
+  // status change that isn't itself re-opening it (handleStatus does that
+  // explicitly) means the decision is resolved, so close it here rather
+  // than needing every other status branch to remember to.
+  const dialog = document.getElementById('tree-subject-section');
+  if (dialog.open) dialog.close();
+  clearDecisionNotice();
+}
+
+// ─── Getting a human's attention for the subject-review dialog ─────────────
+//
+// The dialog itself only helps if this tab/window is what's actually in
+// front of the user -- during a tree apply run, reportbee's own window is
+// the one visibly doing things (navigating, expanding nodes), so it's easy
+// to be watching THAT and miss that Quillsmith is sitting idle waiting on
+// Apply/Skip. Two more channels that don't depend on this tab being
+// visible: the document title (visible in the taskbar/tab strip even
+// backgrounded) and a native OS notification (visible even if Quillsmith's
+// whole window is behind reportbee's).
+const ORIGINAL_TITLE = document.title;
+let notifyTimer = null;
+
+function notifyDecisionNeeded(subjectName) {
+  document.title = `🔔 Review needed — ${ORIGINAL_TITLE}`;
+  // Flashing (alternating the title on an interval) reads as "waiting for
+  // you" even glanced at from a taskbar, where a static title blends into
+  // every other idle tab.
+  clearInterval(notifyTimer);
+  let flip = false;
+  notifyTimer = setInterval(() => {
+    flip = !flip;
+    document.title = flip ? ORIGINAL_TITLE : `🔔 Review needed — ${ORIGINAL_TITLE}`;
+  }, 1200);
+
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+    new Notification('Quillsmith — review needed', {
+      body: `${subjectName}: waiting for you to Apply or Skip.`,
+    });
+  }
+}
+
+function clearDecisionNotice() {
+  clearInterval(notifyTimer);
+  notifyTimer = null;
+  document.title = ORIGINAL_TITLE;
 }
 
 function escapeHtml(s) {
@@ -91,6 +135,7 @@ function handleStatus(status, data) {
   } else if (status === 'awaiting-reference') {
     show('log', 'reference');
   } else if (status === 'awaiting-subject-decision') {
+    show('log');
     document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName}`;
     document.getElementById('tree-subject-meta').textContent =
       `${data.remaining} subject(s) remaining after this one.`;
@@ -99,7 +144,9 @@ function handleStatus(status, data) {
       <p>${data.deletes.length} deletion(s):</p>${renderPlanList(data.deletes)}
       <p>${data.creates.length} creation(s):</p>${renderPlanList(data.creates)}
     `;
-    show('log', 'tree-subject');
+    const dialog = document.getElementById('tree-subject-section');
+    if (!dialog.open) dialog.showModal();
+    notifyDecisionNeeded(data.subjectName);
   } else if (status === 'done') {
     document.getElementById('stop-btn').disabled = true;
     document.getElementById('done-heading').textContent = 'Done';
@@ -380,6 +427,12 @@ document.getElementById('start-btn').onclick = async () => {
 // ─── Build Tree ─────────────────────────────────────────────────────────────
 
 document.getElementById('tree-start-btn').onclick = async () => {
+  // Best requested on a user gesture (this click) -- browsers silently
+  // ignore/reject a bare Notification.requestPermission() call otherwise.
+  // Only asks once per browser profile; a prior grant/denial is a no-op.
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   const gradeSection = document.getElementById('tree-gradesection').value.trim();
   const term = document.getElementById('tree-term').value.trim();
   const year = document.getElementById('tree-year').value.trim();

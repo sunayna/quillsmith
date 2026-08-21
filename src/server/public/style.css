@@ -156,6 +156,28 @@ h2 {
 
 .hidden { display: none !important; }
 
+/* Native <dialog> handles its own show/hide (via showModal()/close()) and
+   centering -- this only needs to override its default plain-border/inset
+   look to match .card, cap its size so a long plan list scrolls instead of
+   overflowing the viewport, and dim the page behind it so it's impossible
+   to mistake for just another card in the normal page flow. */
+#tree-subject-section {
+  max-width: min(640px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  margin: auto;
+}
+#tree-subject-section::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+#tree-subject-section #tree-apply-btn,
+#tree-subject-section #tree-skip-btn {
+  margin-top: 1rem;
+  margin-right: 0.6rem;
+}
+
 #chrome-banner { --card-accent: var(--accent); --card-accent-rgb: var(--accent-rgb); }
 #form-section, #tree-form-section, #tree-subject-section {
   --card-accent: var(--accent2); --card-accent-rgb: var(--accent2-rgb);
