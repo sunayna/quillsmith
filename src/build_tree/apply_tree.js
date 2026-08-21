@@ -417,15 +417,24 @@ function cloneAsNew(template, overrides) {
 // no error anywhere. Filtering standing categories out here is the actual
 // fix; isStandingCategory is the same signal buildPlan already uses to
 // decide what NOT to delete, reused here to decide what's safe to clone.
-function findTopicTemplate(liveTopics) {
-  return liveTopics.find(t => !isStandingCategory(t)) || null;
+// targetNames (when given) is threaded down from buildPlan so
+// isStandingCategory can use its own decisive tiebreaker (see its own
+// comment) -- CONFIRMED live, 2026-08-21 (Grade VI-A English): without
+// it, a subject where every real topic happens to already be corrupted
+// (use_for_aggregation: false from a bad clone before the fix above
+// existed) finds NO valid template at all, since the corrupted-but-real
+// topics look just as "standing" as Work Ethics itself -- the topic would
+// then be deleted (correctly, per buildPlan's own topicUnchanged check)
+// but never recreated, going from "wrong flag" to "gone entirely".
+function findTopicTemplate(liveTopics, targetNames) {
+  return liveTopics.find(t => !isStandingCategory(t, targetNames)) || null;
 }
-function findStandardTemplate(liveTopics, preferTopicUuid) {
+function findStandardTemplate(liveTopics, preferTopicUuid, targetNames) {
   if (preferTopicUuid) {
     const t = liveTopics.find(t => t.uuid === preferTopicUuid);
-    if (t && !isStandingCategory(t) && t.standards.length > 0) return t.standards[0];
+    if (t && !isStandingCategory(t, targetNames) && t.standards.length > 0) return t.standards[0];
   }
-  for (const t of liveTopics) if (!isStandingCategory(t) && t.standards.length > 0) return t.standards[0];
+  for (const t of liveTopics) if (!isStandingCategory(t, targetNames) && t.standards.length > 0) return t.standards[0];
   // Some subjects' existing "topics" are themselves flat, type:"assessment"
   // nodes directly under the subject rather than type:"regular_paper"
   // wrappers around real standards -- confirmed live in Module/Mathematics/
@@ -437,9 +446,9 @@ function findStandardTemplate(liveTopics, preferTopicUuid) {
   // too rather than reporting no template at all.
   if (preferTopicUuid) {
     const t = liveTopics.find(t => t.uuid === preferTopicUuid);
-    if (t && !isStandingCategory(t) && t.type === 'assessment') return t;
+    if (t && !isStandingCategory(t, targetNames) && t.type === 'assessment') return t;
   }
-  for (const t of liveTopics) if (!isStandingCategory(t) && t.type === 'assessment') return t;
+  for (const t of liveTopics) if (!isStandingCategory(t, targetNames) && t.type === 'assessment') return t;
   return null;
 }
 function findNearbyAssessmentTemplate(liveTopics, preferStandardUuid) {
@@ -450,7 +459,7 @@ function findNearbyAssessmentTemplate(liveTopics, preferStandardUuid) {
   }
   return null;
 }
-function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid) {
+function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid, targetNames) {
   for (const t of liveTopics) for (const s of t.standards) if (s.assessments.length > 0) return s.assessments[0];
   // Some subjects (confirmed in Hindi) have zero existing leaf-level
   // assessment nodes anywhere -- every standard currently has no children
@@ -458,7 +467,7 @@ function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid) {
   // reportbee (both type: "assessment", same field shape), so fall back to
   // an existing standard as the template rather than borrowing
   // cross-subject and risking a mismatched course_id/grade_template_id.
-  return findStandardTemplate(liveTopics, preferStandardUuid);
+  return findStandardTemplate(liveTopics, preferStandardUuid, targetNames);
 }
 
 // Builds one new assessment leaf node (no children of its own).
@@ -467,10 +476,10 @@ function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid) {
 // guaranteed to carry the correct course_id/grade_template_id for exactly
 // this lineage (confirmed live in SEL: a subject-wide fallback picked an
 // unrelated leftover standard's leaf, inheriting its wrong grade scale).
-function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate) {
+function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate, targetNames) {
   const template = findNearbyAssessmentTemplate(liveTopics, parentUuid)
     || fallbackTemplate
-    || findAnyAssessmentOrStandardTemplate(liveTopics, parentUuid);
+    || findAnyAssessmentOrStandardTemplate(liveTopics, parentUuid, targetNames);
   if (!template) return { node: null, label: `[assessment, NO TEMPLATE AVAILABLE] "${targetAsm.name}" — skipped, nothing in this subject to clone from` };
   const uuid = crypto.randomUUID();
   const node = cloneAsNew(template, {
@@ -497,15 +506,15 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
 // higher in the tree (the existing type:"assessment" fallback below
 // already relies on that same fact) -- valid to clone from directly
 // rather than failing when nothing more specific exists.
-function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate) {
-  const template = findStandardTemplate(liveTopics, parentUuid) || fallbackTemplate;
+function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate, targetNames) {
+  const template = findStandardTemplate(liveTopics, parentUuid, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[standard, NO TEMPLATE AVAILABLE] "${targetStd.name}" — skipped, nothing in this subject to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const asmOrder = { n: 0 };
   const childUuids = [];
   for (const targetAsm of targetStd.assessments) {
     asmOrder.n += 10;
-    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template);
+    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template, targetNames);
     labels.push(label);
     if (node) { creates[node.uuid] = node; childUuids.push(node.uuid); }
   }
@@ -522,15 +531,15 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
 }
 
 // Builds one new topic node plus its standards (and their assessments).
-function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels) {
-  const template = findTopicTemplate(liveTopics);
+function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames) {
+  const template = findTopicTemplate(liveTopics, targetNames);
   if (!template) { labels.push(`[topic, NO TEMPLATE AVAILABLE] "${topicName}" — skipped, subject has no existing topic to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const stdOrder = { n: 0 };
   const childUuids = [];
   for (const targetStd of targetTopic.standards) {
     stdOrder.n += 10;
-    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template);
+    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template, targetNames);
     if (node) childUuids.push(node.uuid);
   }
   const node = cloneAsNew(template, {
@@ -539,6 +548,16 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
     conversion_score: targetTopic.weightage != null ? targetTopic.weightage : template.conversion_score,
     should_convert: true,
     mark_entry_mode: targetTopic.mark_entry_mode || template.mark_entry_mode,
+    // Every topic this function creates is, by construction, real
+    // curricular content (findTopicTemplate already excludes standing
+    // categories from being cloned as a template in the first place) --
+    // forced explicitly rather than left to whatever the template
+    // happened to carry, since a template created before this fix existed
+    // could itself still be wrong (confirmed live, Grade VI-A English: an
+    // earlier bad clone's use_for_aggregation: false would otherwise keep
+    // propagating to every topic created from it afterward).
+    use_for_aggregation: true,
+    use_for_total: true,
   });
   creates[uuid] = node;
   labels.push(`[topic, created] "${topicName}" (weight ${targetTopic.weightage}) with ${childUuids.length} standard(s)`);
@@ -568,7 +587,20 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
 // regardless of what it's named or which language it's in. Kept the name
 // check too (OR, not replacing) since erring toward NOT deleting something
 // is the safe direction if the two signals ever disagree.
-function isStandingCategory(topic) {
+//
+// CONFIRMED live, 2026-08-21 (Grade VI-A English): use_for_aggregation
+// alone isn't reliable either, in the other direction -- a topic created
+// before the findTopicTemplate fix can be genuinely real (its exact name
+// sitting right there in the xlsx target) while still carrying
+// use_for_aggregation: false from the bad template it was cloned from.
+// That misidentified it as standing, which made it invisible to every
+// later check meant to catch and fix it -- silently left alone forever,
+// not just spared from deletion. targetNames (when given) is the
+// decisive tiebreaker: a standing category is specifically defined as one
+// that never appears in any term's xlsx, so a name match there rules out
+// "standing" outright, before either weaker signal below even gets asked.
+function isStandingCategory(topic, targetNames) {
+  if (targetNames && targetNames.has(topic.name)) return false;
   return topic.use_for_aggregation === false || normalize(topic.name).includes('workethics');
 }
 
@@ -621,18 +653,31 @@ function standardsMatch(liveStandards, targetStandards) {
   return true;
 }
 
+// CONFIRMED live, 2026-08-21 (Grade VI-A English): a topic created before
+// the findTopicTemplate fix (see its own comment) can have exactly the
+// right weight and standards -- reading as "unchanged" by every check
+// above -- while still carrying the wrong use_for_aggregation/use_for_total
+// flags from whatever bad template it was originally cloned from. Without
+// this check, such a topic is invisible to a re-run forever: it's already
+// wrong, and nothing here would ever notice or fix it. Every topic that
+// reaches this function is already known non-standing (buildPlan filters
+// standing categories out before calling it), so both flags must be true;
+// anything else forces a recreate regardless of whether weight/standards
+// otherwise match.
 function topicUnchanged(liveTopic, targetTopic) {
   if (!numsClose(liveTopic.conversion_score, targetTopic.weightage)) return false;
   if (targetTopic.mark_entry_mode && liveTopic.mark_entry_mode !== targetTopic.mark_entry_mode) return false;
+  if (liveTopic.use_for_aggregation !== true || liveTopic.use_for_total !== true) return false;
   return standardsMatch(liveTopic.standards, targetTopic.standards);
 }
 
 function buildPlan(liveTopics, targetTopics, subjectUuid) {
   const plan = { deletes: [], needsCreation: [], creates: {}, unchanged: [] };
-  const liveByName = new Map(liveTopics.filter(t => !isStandingCategory(t)).map(t => [t.name, t]));
+  const targetNames = new Set(Object.keys(targetTopics));
+  const liveByName = new Map(liveTopics.filter(t => !isStandingCategory(t, targetNames)).map(t => [t.name, t]));
 
   for (const topic of liveTopics) {
-    if (isStandingCategory(topic)) continue;
+    if (isStandingCategory(topic, targetNames)) continue;
     const targetTopic = targetTopics[topic.name];
     if (targetTopic && topicUnchanged(topic, targetTopic)) {
       plan.unchanged.push(topic.name);
@@ -650,13 +695,13 @@ function buildPlan(liveTopics, targetTopics, subjectUuid) {
       continue;
     }
     const labels = [];
-    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels);
+    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames);
     for (const l of labels) plan.needsCreation.push({ label: l });
     order += 10;
   }
 
   const lastUsedOrder = order - 10;
-  const workEthics = liveTopics.find(isStandingCategory);
+  const workEthics = liveTopics.find(t => isStandingCategory(t, targetNames));
   if (workEthics && (workEthics.order || 0) <= lastUsedOrder) {
     const newOrder = order;
     plan.updates = { [workEthics.uuid]: {
