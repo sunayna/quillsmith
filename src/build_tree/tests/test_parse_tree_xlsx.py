@@ -240,14 +240,16 @@ def test_trailing_assessments_row_not_adjacent_is_ignored():
     assert std["weightage"] == 100.0
 
 
-def test_single_lt_assessments_replace_and_scale():
-    """Confirmed live (G6 Hindi, Standard 1 and 2): when exactly one LT is
-    immediately followed by its own Assessments block, that block replaces
-    the LT's own placeholder entry with its real FA/SA composition -- and
-    when a standard has several LTs each with their own such block, each
-    FA/SA pair is scaled by its own LT's share (not treated as flat
-    siblings across the whole standard), so a smaller LT's pair ends up
-    proportionally smaller too."""
+def test_single_lt_assessments_nest_under_lt():
+    """Confirmed live (G6 Hindi, Standard 1 and 2; and the real live tree,
+    which already has this exact depth): when exactly one LT is immediately
+    followed by its own Assessments block, that block becomes the LT's own
+    NESTED assessments (FA/SA), one level deeper -- the LT itself stays as
+    a real node (Topic -> Standard -> LT -> Assessment), not replaced or
+    flattened away. A standard with several LTs still derives its own
+    weight as their sum, and each LT's own FA/SA split is independent of
+    its sibling LTs' weights (always its own 20/80, not scaled by anything
+    else) since it's a self-contained nested list now."""
     rows = [
         ("Hindi", None, None, None),
         ("Topic Name", "Shravan", None, None),
@@ -275,21 +277,30 @@ def test_single_lt_assessments_replace_and_scale():
 
     std1 = topic["standards"][0]
     assert std1["weightage"] == 20.0
-    names1 = {a["name"] for a in std1["assessments"]}
-    assert names1 == {"FA", "SA"}
-    by_name1 = {a["name"]: a for a in std1["assessments"]}
-    assert by_name1["FA"]["weightage"] == pytest.approx(20.0)
-    assert by_name1["SA"]["weightage"] == pytest.approx(80.0)
+    assert len(std1["assessments"]) == 1
+    lt1 = std1["assessments"][0]
+    assert lt1["name"] == "Fact gathering"
+    assert lt1["weightage"] == 100.0  # this standard's only LT, so 100% of it
+    nested1 = {a["name"]: a for a in lt1["assessments"]}
+    assert nested1["FA"]["weightage"] == pytest.approx(20.0)
+    assert nested1["SA"]["weightage"] == pytest.approx(80.0)
+    assert nested1["FA"]["mark_entry_mode"] == "grade"
 
     std2 = topic["standards"][1]
     assert std2["weightage"] == pytest.approx(55.0)  # 0.2 + 0.2 + 0.15, scaled to whole percent
-    assert len(std2["assessments"]) == 6  # 3 LTs x (FA, SA), no leftover LT placeholders
-    total = sum(a["weightage"] for a in std2["assessments"])
-    assert total == pytest.approx(100.0)
-    # LT3 (0.15) is smaller than LT1/LT2 (0.2 each) -- its FA/SA pair must
-    # land proportionally smaller, not identical to the other two.
-    fa_weights = sorted(a["weightage"] for a in std2["assessments"] if a["name"] == "FA")
-    assert fa_weights[0] < fa_weights[1]
+    assert len(std2["assessments"]) == 3  # LT1, LT2, LT3 stay as real nodes
+    lt_names = {a["name"] for a in std2["assessments"]}
+    assert lt_names == {"Sequencing events", "Character traits", "Setting description"}
+    # LT3 (0.15) is smaller than LT1/LT2 (0.2 each) -- its own relative
+    # share must land proportionally smaller, not identical to the other two.
+    by_name2 = {a["name"]: a for a in std2["assessments"]}
+    assert by_name2["Setting description"]["weightage"] < by_name2["Sequencing events"]["weightage"]
+    # Every LT's own FA/SA split is independent of its weight -- always its
+    # own 20/80, not scaled down for the smaller LT3.
+    for lt in std2["assessments"]:
+        nested = {a["name"]: a for a in lt["assessments"]}
+        assert nested["FA"]["weightage"] == pytest.approx(20.0)
+        assert nested["SA"]["weightage"] == pytest.approx(80.0)
 
 
 # ---------------------------------------------------------------------------

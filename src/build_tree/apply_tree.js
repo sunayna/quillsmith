@@ -476,15 +476,36 @@ function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid, tar
 // guaranteed to carry the correct course_id/grade_template_id for exactly
 // this lineage (confirmed live in SEL: a subject-wide fallback picked an
 // unrelated leftover standard's leaf, inheriting its wrong grade scale).
-function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate, targetNames) {
+// targetAsm.assessments (when non-empty) is a nested split one level
+// deeper still -- confirmed live, 2026-08-21 (Grade VI-A Hindi): reportbee's
+// real tree already goes Topic -> Standard -> LT -> Assessment (FA/SA),
+// with the LT as a real node in its own right, not a placeholder to
+// collapse away once its own composition is known. Recurses the exact
+// same way createStandard/createTopic already build their own children,
+// registering each nested node into the SAME shared creates/labels this
+// whole plan uses -- the common leaf case (no nested split) skips this
+// entirely, since targetAsm.assessments is empty/absent there.
+function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate, targetNames, creates, labels) {
   const template = findNearbyAssessmentTemplate(liveTopics, parentUuid)
     || fallbackTemplate
     || findAnyAssessmentOrStandardTemplate(liveTopics, parentUuid, targetNames);
   if (!template) return { node: null, label: `[assessment, NO TEMPLATE AVAILABLE] "${targetAsm.name}" — skipped, nothing in this subject to clone from` };
   const uuid = crypto.randomUUID();
+
+  const nestedOrder = { n: 0 };
+  const nestedChildUuids = [];
+  for (const nested of (targetAsm.assessments || [])) {
+    nestedOrder.n += 10;
+    const { node: nestedNode, label: nestedLabel } = createAssessment(
+      liveTopics, nested, uuid, nestedOrder.n, nested.mark_entry_mode, template, targetNames, creates, labels
+    );
+    labels.push(nestedLabel);
+    if (nestedNode) { creates[nestedNode.uuid] = nestedNode; nestedChildUuids.push(nestedNode.uuid); }
+  }
+
   const node = cloneAsNew(template, {
     uuid, name: targetAsm.name, short_name: targetAsm.name.slice(0, 10),
-    parent_uuid: parentUuid, children_uuids: [], order,
+    parent_uuid: parentUuid, children_uuids: nestedChildUuids, order,
     conversion_score: targetAsm.weightage != null ? targetAsm.weightage : template.conversion_score,
     should_convert: true,
     mark_entry_mode: mode || template.mark_entry_mode,
@@ -501,7 +522,11 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
     use_for_aggregation: true,
     use_for_total: true,
   });
-  return { node, label: `[assessment, created] "${targetAsm.name}" (weight ${targetAsm.weightage}, out of ${node.max_score})` };
+  return {
+    node,
+    label: `[assessment, created] "${targetAsm.name}" (weight ${targetAsm.weightage}, out of ${node.max_score})`
+      + (nestedChildUuids.length ? ` with ${nestedChildUuids.length} nested assessment(s)` : ''),
+  };
 }
 
 // Builds one new standard node plus its assessment children.
@@ -525,7 +550,7 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
   const childUuids = [];
   for (const targetAsm of targetStd.assessments) {
     asmOrder.n += 10;
-    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template, targetNames);
+    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template, targetNames, creates, labels);
     labels.push(label);
     if (node) { creates[node.uuid] = node; childUuids.push(node.uuid); }
   }

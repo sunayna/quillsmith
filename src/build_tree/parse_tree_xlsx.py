@@ -164,6 +164,14 @@ def parse_subject_block(rows):
                 "weightage": weight,
                 "max_score": None,
                 "mark_entry_mode": "score",
+                # FA/SA (when a following Assessments block belongs to
+                # THIS LT -- see the branch below) nest here as this LT's
+                # own children, not flattened into the standard's list.
+                # Confirmed live: reportbee's real tree already has this
+                # exact depth (Topic -> Standard -> LT -> Assessment), so
+                # the LT is a real node to keep, not a placeholder to
+                # discard once its composition is known.
+                "assessments": [],
             }
             current_standard["assessments"].append(current_lt_entry)
             current_lt_row_index = i
@@ -172,38 +180,21 @@ def parse_subject_block(rows):
         elif (ASSESSMENTS_LABEL_RE.match(a) and current_standard is not None
                 and (i == current_standard_row_index + 1
                      or (current_lt_row_index is not None and i == current_lt_row_index + 1 and lt_run_length == 1))):
-            # Two positions recognized as THIS standard's own assessment
-            # split, not a topic-wide trailer to leave alone: immediately
-            # after the Standard row (English/Math's convention), or
-            # immediately after an LT row -- confirmed live in the 2026-27
-            # Hindi sheet, once per standard (not once per topic the way an
-            # older Hindi workbook did it -- that "topic trailer" shape, if
-            # it still exists elsewhere, is still correctly left alone
-            # since it won't be adjacent to either row here).
-            #
-            # When it's the LT-adjacent case, the LT row was just a
-            # placeholder for "this standard has one learning target" --
-            # its real composition is the FA/SA split found here, which
-            # replaces (not supplements) that placeholder entry so the
-            # standard doesn't end up triple-counted (LT weight + FA + SA
-            # all coexisting, summing to well over 100%). lt_scale (this
-            # LT's own weight, e.g. 0.2) is kept even after removing the
-            # placeholder -- confirmed live: a standard can have several
-            # LTs, each with its own weight AND its own FA/SA split (e.g.
-            # LT1=0.2, LT2=0.2, LT3=0.15, each 20/80 FA/SA) -- FA/SA are
-            # shares of THEIR OWN LT, not flat siblings across the whole
-            # standard, so each one's real weight is lt_scale * its own
-            # fraction (0.2 * 0.2 = 0.04), not the bare fraction alone.
-            # Applying it here means the later "renormalize a standard's
-            # assessments to sum to 100" step (which doesn't know about
-            # LTs at all) still lands correctly across every LT's pairs
-            # combined.
-            lt_scale = None
-            if (current_lt_row_index is not None and i == current_lt_row_index + 1
-                    and lt_run_length == 1 and current_lt_entry in current_standard["assessments"]):
-                lt_scale = current_lt_entry["weightage"]
-                current_standard["assessments"].remove(current_lt_entry)
-                current_lt_entry = None
+            # Two positions recognized as belonging to something specific,
+            # not a topic-wide trailer to leave alone: immediately after
+            # the Standard row (English/Math's convention -- these become
+            # the STANDARD's own direct assessments), or immediately after
+            # an LT row (Hindi's convention -- these become THAT LT's own
+            # nested assessments instead, one level deeper) -- confirmed
+            # live in the 2026-27 Hindi sheet, once per standard/LT (not
+            # once per topic the way an older Hindi workbook did it --
+            # that "topic trailer" shape, if it still exists elsewhere, is
+            # still correctly left alone since it won't be adjacent to
+            # either row here).
+            if current_lt_row_index is not None and i == current_lt_row_index + 1 and lt_run_length == 1:
+                target_list = current_lt_entry["assessments"]
+            else:
+                target_list = current_standard["assessments"]
             lt_run_length = 0
             marks_row = rows[i + 1] if i + 1 < len(rows) else None
 
@@ -238,8 +229,7 @@ def parse_subject_block(rows):
                     # compact-text convention, so mode defaults to "score"
                     # (the deterministic default per the actual rule) rather
                     # than guessing.
-                    w = float(pct) * lt_scale if lt_scale is not None else float(pct)
-                    current_standard["assessments"].append({"name": name, "weightage": w, "max_score": None, "mark_entry_mode": "score"})
+                    target_list.append({"name": name, "weightage": float(pct), "max_score": None, "mark_entry_mode": "score"})
             else:
                 weights = []
                 if weight_row:
@@ -256,12 +246,9 @@ def parse_subject_block(rows):
                     name = name.strip()
                     w = weights[col_idx - 1] if col_idx - 1 < len(weights) else None
                     m = marks[col_idx - 1] if col_idx - 1 < len(marks) else None
-                    w_final = float(w) if isinstance(w, (int, float)) else None
-                    if w_final is not None and lt_scale is not None:
-                        w_final *= lt_scale
-                    current_standard["assessments"].append({
+                    target_list.append({
                         "name": name,
-                        "weightage": w_final,
+                        "weightage": float(w) if isinstance(w, (int, float)) else None,
                         "max_score": float(m) if isinstance(m, (int, float)) else None,
                         # Decided per-assessment from THIS assessment's own
                         # Marks cell only -- "grade"/"rubric"/"EMPS" mentioned
@@ -309,6 +296,21 @@ def parse_subject_block(rows):
             if total > 0:
                 for a in weighted:
                     a["weightage"] = round((a["weightage"] / total) * 100, 4)
+
+    # Same rule one level deeper, for an LT's own nested FA/SA (Hindi's
+    # convention -- see the LT branch above): those weights are shares of
+    # their own LT (e.g. FA=0.2, SA=0.8 of THAT LT), never touched by the
+    # standard-level pass above since it only looks at std["assessments"]
+    # directly, not into each entry's own nested list.
+    for topic in topics.values():
+        for std in topic["standards"]:
+            for entry in std["assessments"]:
+                nested = entry.get("assessments") or []
+                weighted = [a for a in nested if a["weightage"] is not None]
+                total = sum(a["weightage"] for a in weighted)
+                if total > 0:
+                    for a in weighted:
+                        a["weightage"] = round((a["weightage"] / total) * 100, 4)
 
     # Scale normalization: if this subject's topic weightages sum close to 1
     # rather than 100, they're fractions -- convert topic/standard weights
