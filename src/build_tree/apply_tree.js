@@ -590,6 +590,28 @@ async function saveStructure(page, ctx, changes) {
   }, { baseUrl: ctx.baseUrl, planId: ctx.planId, csrfToken: ctx.csrfToken, accessToken: ctx.accessToken, profileId: ctx.profileId, changes });
 }
 
+// reportbee validates "no duplicate name at this level" against a single
+// request's combined effect, not sequentially -- deleting an old node and
+// creating a new one with the same name in the SAME request gets rejected
+// even though the create was only ever meant to replace the delete, not
+// coexist with it. CONFIRMED live, 2026-08-21 (Grade VI, Math): a combined
+// request failed with "Nodes in the same level shouldn't contain the same
+// name in section 'VI A' ... Mathematics->Number System" purely from
+// wipe-and-rebuild's normal delete-old-recreate-fresh behavior hitting a
+// topic whose name happened to be unchanged. Splitting into two round
+// trips -- every delete first, then every update/create -- sidesteps this:
+// the name is genuinely free server-side before the create fires,
+// regardless of how reportbee's own validation is implemented.
+async function saveStructureTwoPhase(page, ctx, { update, deleteUuids }) {
+  if (deleteUuids.length > 0) {
+    const deleteResult = await saveStructure(page, ctx, { update: {}, delete: deleteUuids, copy_marks: [] });
+    if (!(deleteResult.json && deleteResult.json.status)) {
+      return deleteResult;
+    }
+  }
+  return saveStructure(page, ctx, { update, delete: [], copy_marks: [] });
+}
+
 // The tree's own top-level "Year" node (Term 1/Term 2's shared parent) has
 // a plain `name` field that's just whatever it was set to when the exam
 // plan was first created for that year (often cloned from last year's) --
@@ -747,8 +769,14 @@ async function main() {
   // needed yet.
   let termDomLabel = await findFullLabel(page, termLabel);
   if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, termLabel); }
+  // Cached and reused for every subject below instead of re-sampling per
+  // subject -- see the loop's own comment for why (SEL's subject-level
+  // node has no "Enter / View Marks" option of its own).
+  let cachedAccessToken = null, cachedProfileId = null;
   if (termDomLabel) {
     const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
+    cachedAccessToken = accessToken;
+    cachedProfileId = profileId;
     await ensureYearRootLabel(page, { baseUrl, planId, csrfToken, accessToken, profileId }, yearLabel);
   } else {
     console.warn(`⚠️  Could not find Term "${termLabel}" to check the year root label -- skipping that check.`);
@@ -800,8 +828,18 @@ async function main() {
       continue;
     }
 
-    const domLabel = await findFullLabel(page, liveName) || liveName;
-    const { accessToken, profileId } = await sampleAuthParams(page, domLabel);
+    // access_token/profile_id are session-level, not node-specific (see
+    // sampleAuthParams's own comment) -- reuse the Term-level sample above
+    // rather than re-sampling from this subject's own node, which fails
+    // for SEL: its subject-level node ("Socio-Emotional Learning") has no
+    // "Enter / View Marks" option at all (confirmed live, 2026-08-21).
+    let accessToken = cachedAccessToken, profileId = cachedProfileId;
+    if (!accessToken || !profileId) {
+      const domLabel = await findFullLabel(page, liveName) || liveName;
+      ({ accessToken, profileId } = await sampleAuthParams(page, domLabel));
+      cachedAccessToken = accessToken;
+      cachedProfileId = profileId;
+    }
     const ctx = { baseUrl, planId: liveSubject.plan_id, csrfToken, accessToken, profileId };
 
     const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid } = await readLiveTree(page, ctx, liveSubject.uuid);
@@ -851,10 +889,9 @@ async function main() {
       updates[node.uuid] = node;
     }
     const deleteUuids = plan.deletes.flatMap(d => [d.uuid, ...(d.children || [])]);
-    const changes = { update: updates, delete: deleteUuids, copy_marks: [] };
 
     await assertOnGradeSection(page, gradeSectionLabel, `immediately before saving "${subjectName}"`);
-    const result = await saveStructure(page, ctx, changes);
+    const result = await saveStructureTwoPhase(page, ctx, { update: updates, deleteUuids });
     console.log('Response status:', result.status);
     if (result.json) {
       console.log(result.json.status ? '✅ ' + result.json.message : '❌ ' + JSON.stringify(result.json));
@@ -872,7 +909,7 @@ async function main() {
 
 module.exports = {
   ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
-  readLiveTree, buildPlan, saveStructure, guessTermLabel, guessYearLabel,
+  readLiveTree, buildPlan, saveStructure, saveStructureTwoPhase, guessTermLabel, guessYearLabel,
   findDefaultTreeFile, currentGradeSectionLabel, assertOnGradeSection,
   SKIP_SUBJECTS: process.env.INCLUDE_SEL ? [] : ['sel'],
 };

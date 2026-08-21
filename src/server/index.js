@@ -316,6 +316,18 @@ async function runTreePipeline(job) {
       if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, job.term); }
       if (termDomLabel) {
         const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
+        // access_token/profile_id are session-level, not node-specific (see
+        // sampleAuthParams's own comment) -- cached here so every subject
+        // below reuses this instead of re-sampling from ITS OWN node. That
+        // per-subject re-sampling used to be the only source, which broke
+        // for SEL: its subject-level node ("Socio-Emotional Learning") is a
+        // plain organizational node with no "Enter / View Marks" option at
+        // all (only the linked-ReportPlan wrapper beneath it has that) --
+        // confirmed live, 2026-08-21. The Term node always has it, so
+        // sampling here once and reusing sidesteps that per-subject gap
+        // entirely rather than special-casing SEL's node again.
+        job.accessToken = accessToken;
+        job.profileId = profileId;
         await treeLib.ensureYearRootLabel(page, { baseUrl, planId, csrfToken: job.csrfToken, accessToken, profileId }, job.year);
       } else {
         job.log(`Could not find Term "${job.term}" to check the year root label — skipping that check.`);
@@ -370,8 +382,18 @@ async function advanceToNextSubject(job) {
         continue;
       }
 
-      const domLabel = await findFullLabel(page, liveName) || liveName;
-      const { accessToken, profileId } = await sampleAuthParams(page, domLabel);
+      // Reuse the Term-level token cached in runTreePipeline when
+      // available (see its own comment) instead of re-sampling from this
+      // subject's own node -- falls back to per-subject sampling only if
+      // that initial cache attempt didn't happen (e.g. the Term node
+      // itself couldn't be found).
+      let accessToken = job.accessToken, profileId = job.profileId;
+      if (!accessToken || !profileId) {
+        const domLabel = await findFullLabel(page, liveName) || liveName;
+        ({ accessToken, profileId } = await sampleAuthParams(page, domLabel));
+        job.accessToken = accessToken;
+        job.profileId = profileId;
+      }
       const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
 
       const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
@@ -420,7 +442,6 @@ async function applySubjectDecision(job, action) {
       }
       for (const node of createList) updates[node.uuid] = node;
       const deleteUuids = plan.deletes.flatMap((d) => [d.uuid, ...(d.children || [])]);
-      const changes = { update: updates, delete: deleteUuids, copy_marks: [] };
 
       // The plan was computed earlier (possibly while the reviewer sat on
       // the awaiting-subject-decision dialog for a while) -- re-verify the
@@ -428,7 +449,7 @@ async function applySubjectDecision(job, action) {
       // actually saving. See assertOnGradeSection's own comment for why
       // this matters: this tab is a real, interactive browser window.
       await treeLib.assertOnGradeSection(job.page, job.gradeSectionLabel, `immediately before saving "${subjectName}"`);
-      const result = await treeLib.saveStructure(job.page, ctx, changes);
+      const result = await treeLib.saveStructureTwoPhase(job.page, ctx, { update: updates, deleteUuids });
       if (result.json && result.json.status) {
         job.log(`✅ ${subjectName}: ${result.json.message || 'applied'}`);
         job.subjectResults.push({ subject: subjectName, outcome: 'applied' });
