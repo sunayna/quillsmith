@@ -547,22 +547,33 @@ async function clickFirstAvailableNode(page) {
   if (!nodes.length) return false;
   const box = await nodes[0].boundingBox();
   if (!box) return false;
+  const urlBefore = page.url();
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await delay(1000);
   // Whichever node happens to be first varies by grade/section, and isn't
   // picked for any particular meaning -- for most it's a harmless D3
-  // "select" state change, but confirmed live (Grade IV-A) it can instead
-  // trigger a real page navigation. Without this, the caller's very next
-  // page.evaluate() call (getCsrfToken, right after switchGradeSection
-  // returns) raced against that navigation and crashed with "Execution
-  // context was destroyed, most likely because of a navigation" -- a
-  // cheap liveness probe right here catches it immediately (near-zero
-  // cost in the common non-navigating case) instead of leaving the
-  // caller to discover it the hard way.
+  // "select" state change, but CONFIRMED live (Grade IV-A) it can instead
+  // navigate to a completely unrelated page (a student "Segregation
+  // Status" report, nothing to do with the exam-plan tree at all -- not
+  // just a same-page state change that happens to invalidate the JS
+  // context). A liveness probe alone isn't enough here: it stops the
+  // immediate crash (the caller's very next page.evaluate() call,
+  // getCsrfToken, used to race the navigation and die with "Execution
+  // context was destroyed"), but silently continuing on the wrong page
+  // would leave every subsequent tree-reading call misbehaving in
+  // confusing, hard-to-diagnose ways instead. So: if the URL no longer
+  // looks like the exam-plan/build_structure page we were just on, go
+  // back and wait for that to settle rather than accepting wherever the
+  // click landed.
   const contextAlive = await page.evaluate(() => true).catch(() => false);
   if (!contextAlive) {
     await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
     await delay(500);
+  }
+  const urlAfter = page.url();
+  if (urlAfter !== urlBefore && !/\/exam_plans\/[^/]+\/build_structure/.test(urlAfter)) {
+    await page.goBack({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+    await delay(1000);
   }
   return true;
 }
