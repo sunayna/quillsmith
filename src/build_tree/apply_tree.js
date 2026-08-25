@@ -1078,7 +1078,21 @@ async function main() {
     for (const c of plan.needsCreation) console.log(`  ${c.label}`);
 
     if (updateList.length === 0 && plan.deletes.length === 0 && createList.length === 0) {
-      console.log('\nNothing to apply for this subject.');
+      // CONFIRMED live, 2026-08-21 (Grade V-A SEL): "nothing to apply" used
+      // to mean both "everything already matches" (fine) and "every
+      // creation attempt failed with NO TEMPLATE AVAILABLE" (a real
+      // problem -- nothing anywhere in this subject to clone from,
+      // usually because it's never had any structure built at all) --
+      // indistinguishable from the caller's side even though the labels
+      // above already say which one happened. Splitting the message here
+      // means a genuinely broken subject can't silently read as "already
+      // correct" again.
+      const failed = plan.needsCreation.filter(c => c.label.includes('NO TEMPLATE AVAILABLE'));
+      if (failed.length > 0) {
+        console.log(`\n⚠️  Nothing was actually created -- ${failed.length} creation(s) failed above (NO TEMPLATE AVAILABLE). This subject likely has no existing structure anywhere to clone from yet.`);
+      } else {
+        console.log('\nNothing to apply for this subject.');
+      }
       continue;
     }
 

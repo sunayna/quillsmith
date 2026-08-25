@@ -409,8 +409,23 @@ async function advanceToNextSubject(job) {
       }
 
       if (updateList.length === 0 && plan.deletes.length === 0 && createList.length === 0) {
-        job.log('Nothing to apply for this subject.');
-        job.subjectResults.push({ subject: subjectName, outcome: 'no-changes' });
+        // See apply_tree.js's own comment on this same split (CONFIRMED
+        // live, 2026-08-21, Grade V-A SEL) -- the web UI previously didn't
+        // even log plan.needsCreation's labels here at all, so a subject
+        // where every topic failed with NO TEMPLATE AVAILABLE (nothing
+        // anywhere to clone from -- usually never built at all) was
+        // completely silent about it, reading identically to "already
+        // correct".
+        const failed = plan.needsCreation.filter((c) => c.label.includes('NO TEMPLATE AVAILABLE'));
+        if (failed.length > 0) {
+          job.log(`⚠️ Nothing was actually created — ${failed.length} creation(s) failed (NO TEMPLATE AVAILABLE):`);
+          for (const f of failed) job.log(`  ${f.label}`);
+          job.log('This subject likely has no existing structure anywhere to clone from yet.');
+          job.subjectResults.push({ subject: subjectName, outcome: 'creation-failed' });
+        } else {
+          job.log('Nothing to apply for this subject.');
+          job.subjectResults.push({ subject: subjectName, outcome: 'no-changes' });
+        }
         continue;
       }
 
