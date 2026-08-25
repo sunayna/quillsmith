@@ -101,6 +101,16 @@
         <input id="tree-subject-filter" type="text" placeholder="blank = all subjects in the workbook">
       </label>
     </div>
+    <div class="field-row">
+      <label class="checkbox-label" title="Deletes and recreates every topic from the xlsx, even ones that look unchanged. Use this if a subject was previously applied with a bug that a plain re-run wouldn't detect as a change.">
+        <input id="tree-force-apply" type="checkbox">
+        Force apply (ignore "already matches" and rebuild everything)
+      </label>
+      <label class="checkbox-label" title="Reads the 'Work Ethics' value from the workbook's Scoring Guide sheet and, for every subject where it differs, updates just that one node's weight (a scoped patch — Work Ethics is otherwise never touched by this tool). Leave unchecked for a normal run.">
+        <input id="tree-apply-work-ethics" type="checkbox">
+        Update Work Ethics weight from Scoring Guide sheet
+      </label>
+    </div>
     <button id="tree-start-btn" class="accent-violet">Start tree apply</button>
     <p id="tree-form-error" class="error hidden"></p>
   </section>

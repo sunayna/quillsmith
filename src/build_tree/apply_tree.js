@@ -388,7 +388,27 @@ async function readLiveTree(page, ctx, subjectUuid) {
     }
     tree.push(topicEntry);
   }
-  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode };
+
+  // A node's grade_template_id (not `type`) is what actually controls the
+  // grading *scale* it displays (e.g. "ROC" vs the generic default "Just
+  // Right") -- CONFIRMED live, 2026-08-25 (Grade V-A SEL): every topic and
+  // standard needs to sit on the SUBJECT node's own grade_template_id for a
+  // mark_entry_mode:"grade" subject (today, only SEL) to render
+  // consistently end to end. New nodes are built by cloning a template (a
+  // sibling, or -- when none exists, confirmed live for a from-scratch SEL
+  // wrapper -- the protected wrapper itself), and neither is guaranteed to
+  // carry the subject's own correct id: the wrapper in particular is
+  // pre-existing data this script never writes to and, for V-A, was
+  // already wrong before this script ever touched it. Fetched once here
+  // and threaded through buildPlan -> createTopic/createStandard so every
+  // grade-mode node this run creates is forced onto the subject's real
+  // scale regardless of which template it happened to clone from --
+  // ordinary "score"-mode subjects are left untouched (see
+  // createStandard's own comment on why that's gated explicitly).
+  const subjectFull = await fetchFullNode(page, ctx, subjectUuid);
+  const subjectGradeTemplateId = subjectFull ? subjectFull.grade_template_id : null;
+
+  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId };
 }
 
 // Creation strategy validated on Module (Seasons/Metals and Non-metals):
@@ -550,7 +570,7 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
 // higher in the tree (the existing type:"assessment" fallback below
 // already relies on that same fact) -- valid to clone from directly
 // rather than failing when nothing more specific exists.
-function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate, targetNames) {
+function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate, targetNames, subjectGradeTemplateId) {
   const template = findStandardTemplate(liveTopics, parentUuid, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[standard, NO TEMPLATE AVAILABLE] "${targetStd.name}" — skipped, nothing in this subject to clone from`); return null; }
   const uuid = crypto.randomUUID();
@@ -577,15 +597,28 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
     // CONFIRMED live, 2026-08-21 (Grade V-A SEL): when no sibling topic
     // exists, createTopic's own `template` becomes the protected wrapper
     // (course_paper) -- and that SAME raw template is what gets passed
-    // down here as fallbackTemplate, since the topic node it's building
-    // doesn't exist yet at this point (only assembled after this whole
-    // standards loop finishes). Without forcing it explicitly the wrapper's
-    // course_paper type leaked straight through to the standard, which
-    // reportbee then displayed on a generic/default scale ("Just Right")
-    // instead of SEL's real one ("ROC") -- same reasoning as createTopic's
-    // own type override, needed here too since the wrong-type template can
-    // arrive from a level higher than just this standard's own topic.
+    // down here as fallbackTemplate. type: "regular_paper" is forced
+    // regardless of what the template carried, same reasoning as
+    // createTopic's own type override.
     type: 'regular_paper',
+    // CONFIRMED live, 2026-08-25 (Grade V-A SEL): the grading *scale* a node
+    // actually displays (e.g. "ROC" vs the generic default "Just Right") is
+    // controlled by grade_template_id, NOT `type` -- forcing type alone
+    // (above) fixed a real, separate bug, but not this one. The wrapper is
+    // pre-existing data this script never writes to and can itself be
+    // wrong, as it was for V-A, so a template cloned from it (or from a
+    // stale sibling created before this fix existed) can't be trusted to
+    // carry the right scale either. Every node this xlsx marks as
+    // mark_entry_mode "grade" (today, only SEL) is forced onto the
+    // subject's own grade_template_id -- fetched once in readLiveTree and
+    // threaded down as subjectGradeTemplateId -- rather than trusting
+    // whatever the template happened to carry. Deliberately gated on
+    // targetStd.mark_entry_mode: forcing this for ordinary "score"-mode
+    // subjects too would risk overwriting a legitimately different
+    // per-node template with the wrong one, something never confirmed
+    // live and not worth the risk for subjects that were never broken.
+    grade_template_id: (targetStd.mark_entry_mode === 'grade' && subjectGradeTemplateId != null)
+      ? subjectGradeTemplateId : template.grade_template_id,
   });
   creates[uuid] = node;
   labels.push(`[standard, created] "${targetStd.name}" (weight ${targetStd.weightage}) with ${childUuids.length} assessment(s)`);
@@ -606,7 +639,7 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
 // elsewhere) -- `type` is forced to "regular_paper" explicitly below,
 // unconditionally, rather than trusting whichever template (sibling or
 // wrapper) happened to supply it.
-function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames, fallbackTemplate) {
+function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames, fallbackTemplate, subjectGradeTemplateId) {
   const template = findTopicTemplate(liveTopics, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[topic, NO TEMPLATE AVAILABLE] "${topicName}" — skipped, subject has no existing topic to clone from`); return null; }
   const uuid = crypto.randomUUID();
@@ -614,7 +647,7 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
   const childUuids = [];
   for (const targetStd of targetTopic.standards) {
     stdOrder.n += 10;
-    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template, targetNames);
+    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template, targetNames, subjectGradeTemplateId);
     if (node) childUuids.push(node.uuid);
   }
   const node = cloneAsNew(template, {
@@ -638,6 +671,14 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
     // from was a normal sibling (already correct) or the protected
     // wrapper (course_paper, which would otherwise leak through here).
     type: 'regular_paper',
+    // See createStandard's own comment on this same override (including
+    // why it's gated on mark_entry_mode) -- CONFIRMED live, 2026-08-25
+    // (Grade V-A SEL): forcing grade_template_id only on standards wasn't
+    // enough on its own -- every SEL node, topics included, needs to be on
+    // the subject's real scale, not whatever a cloned template (a sibling
+    // with its own separate scale, or the wrapper) happened to carry.
+    grade_template_id: (targetTopic.mark_entry_mode === 'grade' && subjectGradeTemplateId != null)
+      ? subjectGradeTemplateId : template.grade_template_id,
   });
   creates[uuid] = node;
   labels.push(`[topic, created] "${topicName}" (weight ${targetTopic.weightage}) with ${childUuids.length} standard(s)`);
@@ -727,7 +768,7 @@ function numsClose(a, b) {
 // stricter check, it's just always-false; the diff granularity here has
 // to stop at the standard level, matching what readLiveTree can actually
 // see.
-function standardsMatch(liveStandards, targetStandards) {
+function standardsMatch(liveStandards, targetStandards, subjectGradeTemplateId) {
   if (liveStandards.length !== targetStandards.length) return false;
   const liveByName = new Map(liveStandards.map(s => [s.name, s]));
   for (const targetStd of targetStandards) {
@@ -736,6 +777,13 @@ function standardsMatch(liveStandards, targetStandards) {
     if (!numsClose(liveStd.conversion_score, targetStd.weightage)) return false;
     if (targetStd.mark_entry_mode && liveStd.mark_entry_mode !== targetStd.mark_entry_mode) return false;
     if (liveStd.use_for_aggregation !== true || liveStd.use_for_total !== true) return false;
+    if (liveStd.type !== 'regular_paper') return false;
+    // See createStandard's own comment on grade_template_id (including why
+    // it's gated on mark_entry_mode) -- CONFIRMED live, 2026-08-25 (Grade
+    // V-A SEL): a standard already showing the wrong grading scale ("Just
+    // Right" instead of "ROC") otherwise reads as fully unchanged by every
+    // check above, since nothing else here is sensitive to it.
+    if (targetStd.mark_entry_mode === 'grade' && subjectGradeTemplateId != null && liveStd.grade_template_id !== subjectGradeTemplateId) return false;
   }
   return true;
 }
@@ -763,15 +811,20 @@ function standardsMatch(liveStandards, targetStandards) {
 // FA/SA children underneath (a structural gap the diff has no way to see
 // at all). Not meant for routine use -- only for deliberately re-forcing
 // a subject once, after a bug like that one is confirmed fixed.
-function topicUnchanged(liveTopic, targetTopic) {
-  if (process.env.FORCE_REBUILD) return false;
+function topicUnchanged(liveTopic, targetTopic, forceRebuild, subjectGradeTemplateId) {
+  if (forceRebuild || process.env.FORCE_REBUILD) return false;
   if (!numsClose(liveTopic.conversion_score, targetTopic.weightage)) return false;
   if (targetTopic.mark_entry_mode && liveTopic.mark_entry_mode !== targetTopic.mark_entry_mode) return false;
   if (liveTopic.use_for_aggregation !== true || liveTopic.use_for_total !== true) return false;
-  return standardsMatch(liveTopic.standards, targetTopic.standards);
+  if (liveTopic.type !== 'regular_paper') return false;
+  // See createTopic's own comment on grade_template_id (including why it's
+  // gated on mark_entry_mode) -- a topic already on the wrong scale
+  // otherwise reads as unchanged by every check above.
+  if (targetTopic.mark_entry_mode === 'grade' && subjectGradeTemplateId != null && liveTopic.grade_template_id !== subjectGradeTemplateId) return false;
+  return standardsMatch(liveTopic.standards, targetTopic.standards, subjectGradeTemplateId);
 }
 
-function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplate) {
+function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplate, forceRebuild, subjectGradeTemplateId, targetWorkEthicsWeight) {
   const plan = { deletes: [], needsCreation: [], creates: {}, unchanged: [] };
   const targetNames = new Set(Object.keys(targetTopics));
   const liveByName = new Map(liveTopics.filter(t => !isStandingCategory(t, targetNames)).map(t => [t.name, t]));
@@ -779,7 +832,7 @@ function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplat
   for (const topic of liveTopics) {
     if (isStandingCategory(topic, targetNames)) continue;
     const targetTopic = targetTopics[topic.name];
-    if (targetTopic && topicUnchanged(topic, targetTopic)) {
+    if (targetTopic && topicUnchanged(topic, targetTopic, forceRebuild, subjectGradeTemplateId)) {
       plan.unchanged.push(topic.name);
       continue;
     }
@@ -790,26 +843,65 @@ function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplat
   let order = 10;
   for (const [topicName, targetTopic] of Object.entries(targetTopics)) {
     const liveTopic = liveByName.get(topicName);
-    if (liveTopic && topicUnchanged(liveTopic, targetTopic)) {
+    if (liveTopic && topicUnchanged(liveTopic, targetTopic, forceRebuild, subjectGradeTemplateId)) {
       order += 10;
       continue;
     }
     const labels = [];
-    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames, subjectFallbackTemplate);
+    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames, subjectFallbackTemplate, subjectGradeTemplateId);
     for (const l of labels) plan.needsCreation.push({ label: l });
     order += 10;
   }
 
   const lastUsedOrder = order - 10;
   const workEthics = liveTopics.find(t => isStandingCategory(t, targetNames));
+  plan.updates = {};
   if (workEthics && (workEthics.order || 0) <= lastUsedOrder) {
     const newOrder = order;
-    plan.updates = { [workEthics.uuid]: {
+    plan.updates[workEthics.uuid] = {
       uuid: workEthics.uuid, order: newOrder,
       _label: `[topic] "${workEthics.name}" order ${workEthics.order} -> ${newOrder} (Work Ethics must sort last)`,
-    } };
-  } else {
-    plan.updates = {};
+    };
+  }
+
+  // Work Ethics is otherwise permanently exempt from every create/update
+  // this file does (see isStandingCategory's own comment) -- its weight is
+  // deliberately excluded from that, but only opt-in: targetWorkEthicsWeight
+  // is only ever non-null when the caller explicitly asked for it (a
+  // checkbox in the UI, not part of the normal run), since it's the same
+  // value across every grade/subject and changes rarely enough that a
+  // silent, automatic overwrite every run risked pushing a stale number
+  // from an unrelated edit to the Scoring Guide sheet.
+  if (workEthics && targetWorkEthicsWeight != null && !numsClose(workEthics.conversion_score, targetWorkEthicsWeight)) {
+    const existing = plan.updates[workEthics.uuid] || { uuid: workEthics.uuid };
+    const reorderLabel = existing._label ? `${existing._label}; ` : '';
+    plan.updates[workEthics.uuid] = {
+      ...existing,
+      conversion_score: targetWorkEthicsWeight,
+      _label: `${reorderLabel}[topic] "${workEthics.name}" weight ${workEthics.conversion_score} -> ${targetWorkEthicsWeight} (Scoring Guide sheet)`,
+    };
+  }
+
+  // CONFIRMED live, 2026-08-25 (Grade V-A SEL): forcing topics/standards
+  // onto the subject's grade_template_id wasn't the whole picture -- the
+  // protected wrapper itself (readLiveTree's protectedParentNode, passed in
+  // here as subjectFallbackTemplate) is pre-existing data this script
+  // normally never writes to at all, and for V-A it was ALSO on the wrong
+  // scale (mark_entry_mode "score" / grade_template_id 350772 "Just Right",
+  // instead of "grade" / 350779 "ROC" like VII-A's own working wrapper).
+  // That's a scoped field patch, not the delete/recreate the wrapper is
+  // otherwise permanently exempt from -- still gated on this being a
+  // grade-mode subject, same reasoning as createStandard's own gate, so an
+  // ordinary "score"-mode subject's wrapper is never touched.
+  const isGradeModeSubject = Object.values(targetTopics).some(t => t.mark_entry_mode === 'grade');
+  if (isGradeModeSubject && subjectFallbackTemplate && subjectGradeTemplateId != null
+      && (subjectFallbackTemplate.grade_template_id !== subjectGradeTemplateId || subjectFallbackTemplate.mark_entry_mode !== 'grade')) {
+    plan.updates[subjectFallbackTemplate.uuid] = {
+      uuid: subjectFallbackTemplate.uuid,
+      grade_template_id: subjectGradeTemplateId,
+      mark_entry_mode: 'grade',
+      _label: `[wrapper] "${subjectFallbackTemplate.name}" grade_template_id ${subjectFallbackTemplate.grade_template_id} -> ${subjectGradeTemplateId}, mark_entry_mode ${subjectFallbackTemplate.mark_entry_mode} -> grade`,
+    };
   }
 
   return plan;
@@ -933,6 +1025,12 @@ function parseTreeXlsx(xlsxPath, grade, subject) {
   if (subject) args.push(subject);
   const out = execFileSync(PYTHON_CMD, args, { cwd: ROOT });
   return JSON.parse(out.toString());
+}
+
+function readWorkEthicsWeight(xlsxPath) {
+  const args = [path.join(__dirname, 'parse_tree_xlsx.py'), '--work-ethics-weight', xlsxPath];
+  const out = execFileSync(PYTHON_CMD, args, { cwd: ROOT });
+  return JSON.parse(out.toString()).work_ethics_weight;
 }
 
 function findDefaultTreeFile() {
@@ -1084,7 +1182,7 @@ async function main() {
     }
     const ctx = { baseUrl, planId: liveSubject.plan_id, csrfToken, accessToken, profileId };
 
-    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode } = await readLiveTree(page, ctx, liveSubject.uuid);
+    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId } = await readLiveTree(page, ctx, liveSubject.uuid);
     if (process.env.DEBUG_TREE) {
       console.log('\n🔎 Live tree read:');
       if (protectedParentUuid) console.log(`  (new topics will be created under protected wrapper ${protectedParentUuid}, not the subject itself)`);
@@ -1098,7 +1196,7 @@ async function main() {
         }
       }
     }
-    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode);
+    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode, process.env.FORCE_REBUILD, subjectGradeTemplateId);
     for (const uuid of wrapperUuidsToDelete) {
       plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
     }
@@ -1167,7 +1265,7 @@ async function main() {
 }
 
 module.exports = {
-  ensureYearRootLabel, parseTreeXlsx, navigateToSubject, readLiveSubject,
+  ensureYearRootLabel, parseTreeXlsx, readWorkEthicsWeight, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, saveStructureTwoPhase, guessTermLabel, guessYearLabel,
   findDefaultTreeFile, currentGradeSectionLabel, assertOnGradeSection,
   SKIP_SUBJECTS: [],

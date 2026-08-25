@@ -296,6 +296,9 @@ async function runTreePipeline(job) {
     job.gradeSectionLabel = `${grade} ${section}`;
 
     await withCapturedConsole(job, async () => {
+      if (job.forceRebuild) {
+        job.log('Force apply is ON: every topic will be deleted and recreated from the xlsx, even ones that already look unchanged.');
+      }
       job.log('Connecting to reportbee...');
       const page = await connectToReportbeeTab();
       job.browser = page.browser();
@@ -335,6 +338,14 @@ async function runTreePipeline(job) {
 
       job.log('Parsing tree workbook...');
       const target = treeLib.parseTreeXlsx(job.treeXlsxPath, grade, job.subjectFilter || undefined);
+      if (job.applyWorkEthicsWeight) {
+        job.targetWorkEthicsWeight = treeLib.readWorkEthicsWeight(job.treeXlsxPath);
+        if (job.targetWorkEthicsWeight != null) {
+          job.log(`Work Ethics weight from Scoring Guide sheet: ${job.targetWorkEthicsWeight} (will be applied to every subject where it differs)`);
+        } else {
+          job.log('Apply Work Ethics weight was checked, but no "Work Ethics" value was found in the Scoring Guide sheet — skipping.');
+        }
+      }
       fs.unlink(job.treeXlsxPath, () => {});
       const subjects = Object.keys(target).filter((name) => {
         if (treeLib.SKIP_SUBJECTS.includes(name.toLowerCase())) {
@@ -396,8 +407,8 @@ async function advanceToNextSubject(job) {
       }
       const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
 
-      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
-      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode);
+      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
+      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode, job.forceRebuild, subjectGradeTemplateId, job.targetWorkEthicsWeight);
       for (const uuid of wrapperUuidsToDelete) {
         plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
       }
@@ -782,7 +793,7 @@ app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {
   if (activeJob) {
     return res.status(409).json({ error: 'A run is already in progress', jobId: activeJob.id });
   }
-  const { gradeSection, term, year, planType, subjectFilter } = req.body || {};
+  const { gradeSection, term, year, planType, subjectFilter, forceApply, applyWorkEthicsWeight } = req.body || {};
   if (!gradeSection || !term || !year) {
     return res.status(400).json({ error: 'Grade & Section, Term, and Year are all required' });
   }
@@ -796,6 +807,8 @@ app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {
   job.year = year;
   job.planType = planType || 'Academic';
   job.subjectFilter = subjectFilter || '';
+  job.forceRebuild = forceApply === 'true' || forceApply === true;
+  job.applyWorkEthicsWeight = applyWorkEthicsWeight === 'true' || applyWorkEthicsWeight === true;
   job.treeXlsxPath = req.file.path;
   activeJob = job;
   res.json({ jobId: job.id });

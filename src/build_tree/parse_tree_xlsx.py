@@ -510,9 +510,34 @@ def parse_workbook(xlsx_path, grade, subject_filter=None):
     return result
 
 
+# Work Ethics' weight lives once, in the workbook-wide "Scoring Guide" sheet
+# (confirmed layout: A8 "Work Ethics", B8 30 -- not per-grade, not per-
+# subject), separate from parse_workbook's own subject-keyed shape on
+# purpose: mixing a non-subject key into that dict would leak into every
+# caller that does Object.keys(parsed) expecting only subject names (e.g.
+# the web UI's subject-picker). Searched by label rather than a hardcoded
+# cell, in case the sheet's layout ever shifts a row.
+def read_work_ethics_weight(xlsx_path, sheet_name="Scoring Guide"):
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    if sheet_name not in wb.sheetnames:
+        return None
+    ws = wb[sheet_name]
+    for row in ws.iter_rows(max_col=2):
+        label = row[0].value
+        if isinstance(label, str) and label.strip().lower() == "work ethics":
+            value = row[1].value if len(row) > 1 else None
+            return value if isinstance(value, (int, float)) else None
+    return None
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--work-ethics-weight":
+        print(json.dumps({"work_ethics_weight": read_work_ethics_weight(sys.argv[2])}))
+        return
+
     if len(sys.argv) < 3:
         print("usage: python3 parse_tree_xlsx.py <xlsx_path> <Grade e.g. VII> [Subject]")
+        print("       python3 parse_tree_xlsx.py --work-ethics-weight <xlsx_path>")
         sys.exit(1)
     xlsx_path = sys.argv[1]
     grade = sys.argv[2]

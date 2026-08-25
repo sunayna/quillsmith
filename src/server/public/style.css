@@ -246,6 +246,20 @@ label {
 }
 label:focus-within { color: var(--accent); }
 
+.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  cursor: pointer;
+}
+
 input, select {
   font-size: 0.95rem;
   font-family: inherit;
