@@ -546,12 +546,25 @@ async function clickFirstAvailableNode(page) {
   const nodes = await page.$$('text.node-name');
   if (!nodes.length) return false;
   const box = await nodes[0].boundingBox();
-  if (box) {
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    await delay(1000);
-    return true;
+  if (!box) return false;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await delay(1000);
+  // Whichever node happens to be first varies by grade/section, and isn't
+  // picked for any particular meaning -- for most it's a harmless D3
+  // "select" state change, but confirmed live (Grade IV-A) it can instead
+  // trigger a real page navigation. Without this, the caller's very next
+  // page.evaluate() call (getCsrfToken, right after switchGradeSection
+  // returns) raced against that navigation and crashed with "Execution
+  // context was destroyed, most likely because of a navigation" -- a
+  // cheap liveness probe right here catches it immediately (near-zero
+  // cost in the common non-navigating case) instead of leaving the
+  // caller to discover it the hard way.
+  const contextAlive = await page.evaluate(() => true).catch(() => false);
+  if (!contextAlive) {
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }).catch(() => {});
+    await delay(500);
   }
-  return false;
+  return true;
 }
 
 /**
