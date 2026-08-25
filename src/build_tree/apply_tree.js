@@ -574,6 +574,18 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
     // to be picked.
     use_for_aggregation: true,
     use_for_total: true,
+    // CONFIRMED live, 2026-08-21 (Grade V-A SEL): when no sibling topic
+    // exists, createTopic's own `template` becomes the protected wrapper
+    // (course_paper) -- and that SAME raw template is what gets passed
+    // down here as fallbackTemplate, since the topic node it's building
+    // doesn't exist yet at this point (only assembled after this whole
+    // standards loop finishes). Without forcing it explicitly the wrapper's
+    // course_paper type leaked straight through to the standard, which
+    // reportbee then displayed on a generic/default scale ("Just Right")
+    // instead of SEL's real one ("ROC") -- same reasoning as createTopic's
+    // own type override, needed here too since the wrong-type template can
+    // arrive from a level higher than just this standard's own topic.
+    type: 'regular_paper',
   });
   creates[uuid] = node;
   labels.push(`[standard, created] "${targetStd.name}" (weight ${targetStd.weightage}) with ${childUuids.length} assessment(s)`);
