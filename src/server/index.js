@@ -396,8 +396,8 @@ async function advanceToNextSubject(job) {
       }
       const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
 
-      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
-      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid);
+      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
+      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode);
       for (const uuid of wrapperUuidsToDelete) {
         plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
       }

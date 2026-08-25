@@ -338,6 +338,7 @@ async function readLiveTree(page, ctx, subjectUuid) {
   // linked_nodes checked and protected, it just has nothing to unwrap yet.
   const wrapperUuidsToDelete = [];
   let protectedParentUuid = null;
+  let protectedParentNode = null;
   const unwrapped = [];
   for (const ref of topicRefs) {
     if (ref.type === 'course_paper') {
@@ -346,6 +347,13 @@ async function readLiveTree(page, ctx, subjectUuid) {
       if (isLinked) {
         if (DBG) console.log(`  [dbg] wrapper "${ref.name}" (${ref.uuid}) has linked_nodes -- protected, not queued for deletion`);
         protectedParentUuid = ref.uuid;
+        // Kept (not discarded) so a subject with a protected wrapper but
+        // zero existing topics -- confirmed live, 2026-08-21 (Grade V-A
+        // SEL) -- has SOMETHING to clone the first topic from, instead of
+        // reporting NO TEMPLATE AVAILABLE for every one of them. See
+        // createTopic's own comment on why this is safe to use despite
+        // being a course_paper, not a regular_paper.
+        protectedParentNode = wrapperFull;
       } else {
         wrapperUuidsToDelete.push(ref.uuid);
       }
@@ -380,7 +388,7 @@ async function readLiveTree(page, ctx, subjectUuid) {
     }
     tree.push(topicEntry);
   }
-  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid };
+  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode };
 }
 
 // Creation strategy validated on Module (Seasons/Metals and Non-metals):
@@ -573,8 +581,21 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
 }
 
 // Builds one new topic node plus its standards (and their assessments).
-function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames) {
-  const template = findTopicTemplate(liveTopics, targetNames);
+// fallbackTemplate (when given) is the protected wrapper this subject's
+// topics live under (see readLiveTree's protectedParentNode) -- used only
+// when no sibling topic exists anywhere to clone from. CONFIRMED live,
+// 2026-08-21 (Grade V-A SEL): a freshly-created wrapper with zero topics
+// beneath it reported NO TEMPLATE AVAILABLE for all four, needing one
+// created by hand in reportbee first just to unblock the rest -- the same
+// class of gap createStandard's own fallbackTemplate closed one level
+// down. The wrapper is a course_paper, not a regular_paper like a real
+// topic (course_paper is otherwise reserved for the Subject level -- see
+// isStandingCategory's own comment on why that distinction matters
+// elsewhere) -- `type` is forced to "regular_paper" explicitly below,
+// unconditionally, rather than trusting whichever template (sibling or
+// wrapper) happened to supply it.
+function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames, fallbackTemplate) {
+  const template = findTopicTemplate(liveTopics, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[topic, NO TEMPLATE AVAILABLE] "${topicName}" — skipped, subject has no existing topic to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const stdOrder = { n: 0 };
@@ -600,6 +621,11 @@ function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, crea
     // propagating to every topic created from it afterward).
     use_for_aggregation: true,
     use_for_total: true,
+    // See this function's own comment -- a real topic is always
+    // "regular_paper", regardless of whether the template it was cloned
+    // from was a normal sibling (already correct) or the protected
+    // wrapper (course_paper, which would otherwise leak through here).
+    type: 'regular_paper',
   });
   creates[uuid] = node;
   labels.push(`[topic, created] "${topicName}" (weight ${targetTopic.weightage}) with ${childUuids.length} standard(s)`);
@@ -733,7 +759,7 @@ function topicUnchanged(liveTopic, targetTopic) {
   return standardsMatch(liveTopic.standards, targetTopic.standards);
 }
 
-function buildPlan(liveTopics, targetTopics, subjectUuid) {
+function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplate) {
   const plan = { deletes: [], needsCreation: [], creates: {}, unchanged: [] };
   const targetNames = new Set(Object.keys(targetTopics));
   const liveByName = new Map(liveTopics.filter(t => !isStandingCategory(t, targetNames)).map(t => [t.name, t]));
@@ -757,7 +783,7 @@ function buildPlan(liveTopics, targetTopics, subjectUuid) {
       continue;
     }
     const labels = [];
-    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames);
+    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames, subjectFallbackTemplate);
     for (const l of labels) plan.needsCreation.push({ label: l });
     order += 10;
   }
@@ -1046,7 +1072,7 @@ async function main() {
     }
     const ctx = { baseUrl, planId: liveSubject.plan_id, csrfToken, accessToken, profileId };
 
-    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid } = await readLiveTree(page, ctx, liveSubject.uuid);
+    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode } = await readLiveTree(page, ctx, liveSubject.uuid);
     if (process.env.DEBUG_TREE) {
       console.log('\n🔎 Live tree read:');
       if (protectedParentUuid) console.log(`  (new topics will be created under protected wrapper ${protectedParentUuid}, not the subject itself)`);
@@ -1060,7 +1086,7 @@ async function main() {
         }
       }
     }
-    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid);
+    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode);
     for (const uuid of wrapperUuidsToDelete) {
       plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
     }
