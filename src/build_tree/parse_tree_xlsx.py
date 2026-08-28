@@ -36,6 +36,12 @@ ASSESSMENTS_LABEL_RE = re.compile(r'^assessments?$', re.I)
 MARKS_LABEL_RE = re.compile(r'^marks$', re.I)
 WEIGHTAGE_STD_LABEL_RE = re.compile(r'^weightage\s*standard$', re.I)
 LT_LABEL_RE = re.compile(r'^lt\s*\d+$', re.I)
+# e.g. "SA2 Criteria", "FA Criteria" -- a rubric breakdown for one specific
+# assessment (group(1) is that assessment's own name, matched against the
+# Assessments row's entries by name). Column A carries this label on its
+# first row only; every row below it (blank column A, criterion name in B,
+# weight in C) belongs to the same block until a non-matching row breaks it.
+CRITERIA_LABEL_RE = re.compile(r'^(\S+)\s+criteria$', re.I)
 
 # Column headers for a Topic/Standard's own weight -- NOT the same text as
 # WEIGHTAGE_STD_LABEL_RE above (that's a row label, "Weightage Standard",
@@ -162,6 +168,7 @@ def parse_subject_block(rows):
     current_lt_row_index = None
     current_lt_entry = None
     lt_run_length = 0
+    last_assessments_list = None  # for a following "<name> Criteria" block to attach to
     raw_topic_weightages = []  # for scale detection
     raw_standard_weightages = []
     std_weight_col, topic_weight_col = find_weight_columns(rows)
@@ -240,6 +247,16 @@ def parse_subject_block(rows):
                 # the LT is a real node to keep, not a placeholder to
                 # discard once its composition is known.
                 "assessments": [],
+                # Distinguishes an LT from an ordinary FA/SA leaf that
+                # simply has its own rubric criteria nested under it (see
+                # CRITERIA_LABEL_RE below) -- both end up with a non-empty
+                # "assessments" list, but they need different treatment
+                # below: an LT's own weight is a share of its STANDARD and
+                # must never be renormalized against its siblings, while a
+                # leaf-with-criteria's weight is a share of its standard
+                # exactly like any other FA/SA and must go through the
+                # same renormalization every other leaf does.
+                "is_lt": True,
             }
             current_standard["assessments"].append(current_lt_entry)
             current_lt_row_index = i
@@ -324,6 +341,82 @@ def parse_subject_block(rows):
                         # number, or nothing) means score.
                         "mark_entry_mode": row_mark_entry_mode(m),
                     })
+            last_assessments_list = target_list
+
+        elif last_assessments_list is not None and (
+            CRITERIA_LABEL_RE.match(a)
+            # CONFIRMED live, 2026-08-28 (real G7 Expedition sheet, "Econ
+            # Explorers"): the convention actually in use isn't "<name>
+            # Criteria" at all -- the label row is just the assessment's
+            # OWN full name repeated verbatim ("FA1 Explanatory" appears
+            # again as its own criteria block's label, "SA4 Product
+            # Journey" likewise). CRITERIA_LABEL_RE alone silently matched
+            # nothing here since none of these end in the word "criteria".
+            # Checked second (a match against a real assessment name is
+            # more specific/rarer than the generic "<word> criteria"
+            # shape) so a sheet that genuinely uses "SA2 Criteria" going
+            # forward still works too.
+            or any(x["name"].strip().lower() == a.lower() for x in last_assessments_list)
+        ):
+            # CONFIRMED live, 2026-08-25 (Grade 7 Expedition 2025-26): an
+            # FA/SA leaf can have its own real child nodes in reportbee (a
+            # rubric breakdown), the same recursive shape createAssessment
+            # already builds for Hindi's LT -> FA/SA nesting -- reusing the
+            # same "assessments" key here means no apply_tree.js changes are
+            # needed at all, createAssessment already recurses into it.
+            m = CRITERIA_LABEL_RE.match(a)
+            asm_name = m.group(1).strip().lower() if m else a.lower()
+            target_asm = next((x for x in last_assessments_list if x["name"].strip().lower() == asm_name), None)
+            if target_asm is not None:
+                criteria = []
+                # The label row itself ("SA2 Criteria" | "Conceptual
+                # Understanding" | 0.3) carries the FIRST criterion in its
+                # own B/C columns, same row as the label -- confirmed live
+                # in the sheet layout this is matched against. Captured
+                # here before the lookahead loop below, which starts one
+                # row later and would otherwise silently drop it.
+                if isinstance(b, str) and b.strip():
+                    criteria.append({
+                        "name": b.strip(),
+                        "weightage": first_number(c),
+                        "max_score": None,
+                        # A rubric criterion is graded, not scored
+                        # numerically -- confirmed live, 2026-08-28 (Grade 7
+                        # Expedition): left as "score" by default, these
+                        # rendered as a raw 0-100 numeric split ("100 => 20")
+                        # instead of a grade scale.
+                        "mark_entry_mode": "grade",
+                    })
+                j = i + 1
+                while j < len(rows):
+                    crit_row = rows[j]
+                    crit_a = (str(crit_row[0]).strip() if crit_row[0] is not None else "")
+                    crit_b = crit_row[1] if len(crit_row) > 1 else None
+                    crit_c = crit_row[2] if len(crit_row) > 2 else None
+                    if crit_a != "" or not (isinstance(crit_b, str) and crit_b.strip()):
+                        break
+                    criteria.append({
+                        "name": crit_b.strip(),
+                        "weightage": first_number(crit_c),
+                        "max_score": None,
+                        # See this same field on the first criterion above.
+                        "mark_entry_mode": "grade",
+                    })
+                    j += 1
+                # Left as raw fractions here -- the existing "one level
+                # deeper" renormalization pass below (same one Hindi's LT ->
+                # FA/SA nesting already relies on) renormalizes ANY entry's
+                # nested "assessments" list to sum to 100, which already
+                # converts fractions summing to ~1 (this sheet's own
+                # convention, matching the standalone Module Rubrics sheet)
+                # to reportbee's real whole-number convention (confirmed:
+                # Expedition 2025-26's "Criteria 1"/"Criteria 2" at
+                # conversion_score 50/50) -- scaling it again here would
+                # double-apply.
+                if criteria:
+                    target_asm["assessments"] = criteria
+                i = j
+                continue
 
         elif ASSESSMENTS_LABEL_RE.match(a):
             # An Assessments row that matched neither recognized position
@@ -363,12 +456,14 @@ def parse_subject_block(rows):
     # e.g. 55 -- see the derivation below), not renormalized to sum to 100
     # the way flat English/Math leaves are. Applying this to LTs inflated a
     # 15%-weighted LT to read 27.27%, contradicting the sheet directly.
-    # Detected by whether an entry carries its own nested "assessments" --
-    # only true leaves (no nested list) ever get renormalized here; an
-    # entry with real nested children is an LT, left exactly as parsed.
+    # Detected via is_lt, not just "has a nested assessments list" -- an
+    # ordinary FA/SA leaf with its own rubric criteria attached (see
+    # CRITERIA_LABEL_RE) ALSO ends up with a non-empty nested list, but it's
+    # not an LT and its own weight is still a normal share of the standard,
+    # renormalized here exactly like any other leaf.
     for topic in topics.values():
         for std in topic["standards"]:
-            if any(a.get("assessments") for a in std["assessments"]):
+            if any(a.get("is_lt") for a in std["assessments"]):
                 continue
             weighted = [a for a in std["assessments"] if a["weightage"] is not None]
             total = sum(a["weightage"] for a in weighted)
@@ -420,13 +515,16 @@ def parse_subject_block(rows):
     # fraction -> whole-percentage scaling every other level gets, just
     # applied directly rather than via renormalization, since Hindi's real
     # sheet stores it as a percentage-formatted cell (0.2 for "20%", not
-    # 20 -- confirmed live, 2026-08-21). Scoped to entries that carry their
-    # own nested assessments (LTs specifically) so a true leaf's already-
-    # renormalized 0-100 value is never touched twice.
+    # 20 -- confirmed live, 2026-08-21). Scoped via is_lt (not just "has a
+    # nested assessments list" -- see the renormalization block above's own
+    # comment on why that's not the same thing) so a true leaf's own weight
+    # (renormalized above already) is never touched twice, and a leaf with
+    # rubric criteria attached goes through that normal renormalization
+    # instead of this LT-only direct scaling.
     for topic in topics.values():
         for std in topic["standards"]:
             for a in std["assessments"]:
-                if a.get("assessments") and a["weightage"] is not None and a["weightage"] <= 1.5:
+                if a.get("is_lt") and a["weightage"] is not None and a["weightage"] <= 1.5:
                     a["weightage"] = round(a["weightage"] * 100, 4)
 
     # A Topic ("PROJECT N:" in Module's own convention) with no Topic
