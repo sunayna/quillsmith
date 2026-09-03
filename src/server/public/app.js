@@ -542,16 +542,37 @@ document.getElementById('merge-raw-btn').onclick = () => runJobMerge('raw');
 document.getElementById('merge-filtered-btn').onclick = () => runJobMerge('filtered');
 document.getElementById('merge-sel-btn').onclick = () => runJobMerge('sel');
 
-document.getElementById('run-again-btn').onclick = () => {
+// Both buttons only ever show once a job has reached a terminal state
+// (Done or Error), where the server has already cleared `activeJob`
+// itself (see job.setStatus) -- so this call is normally a no-op 409
+// ("Job has already finished"), which is fine, ignored either way. It's
+// here as a safety net for the case that matters: if a job's own async
+// chain ever gets stuck mid-flight without properly reaching a terminal
+// state (no timeout on some Puppeteer wait, etc.), the server would
+// otherwise keep treating it as the active job forever, silently
+// rejecting every future run with 409 "A run is already in progress" --
+// exactly the "Run another hangs" symptom reported live. Best-effort:
+// stopping an already-finished job is a harmless no-op, so failures here
+// are never worth surfacing to the user.
+async function stopJobBeforeReset(jobId) {
+  if (!jobId) return;
+  try { await fetch(`/api/jobs/${jobId}/stop`, { method: 'POST' }); } catch (e) { /* best-effort */ }
+}
+
+document.getElementById('run-again-btn').onclick = async () => {
+  const finishedJobId = currentJobId;
   currentJobId = null;
   if (eventSource) eventSource.close();
   setTab(currentJobKind === 'tree' ? 'tree' : 'analysis');
+  await stopJobBeforeReset(finishedJobId);
 };
 
-document.getElementById('error-restart-btn').onclick = () => {
+document.getElementById('error-restart-btn').onclick = async () => {
+  const finishedJobId = currentJobId;
   currentJobId = null;
   if (eventSource) eventSource.close();
   setTab(currentJobKind === 'tree' ? 'tree' : 'analysis');
+  await stopJobBeforeReset(finishedJobId);
 };
 
 // ─── Init ───────────────────────────────────────────────────────────────────

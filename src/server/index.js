@@ -453,6 +453,23 @@ async function advanceToNextSubject(job) {
     }
 
     job.log('All subjects processed.');
+    // saveStructureTwoPhase saves via raw fetch() calls inside the page,
+    // not real UI navigation -- the API call succeeds but the tree UI
+    // itself never re-renders, so the tab keeps showing pre-run state
+    // until reloaded. Reloaded once here, at the very end of the whole
+    // run (not per-subject -- confirmed preference, since a reload per
+    // subject means re-navigating afterward too, adding real time to
+    // every subject for a payoff only useful at the very end anyway).
+    // Best-effort: a reload failure (e.g. the tab got closed, or the user
+    // is mid-edit and network-idle never resolves) shouldn't stop the run
+    // from being correctly reported as done -- the changes are already
+    // saved regardless of whether this tab refresh succeeds.
+    try {
+      await job.page.reload({ waitUntil: 'networkidle2', timeout: 15000 });
+      job.log('Reloaded the reportbee tab so the tree reflects the changes just applied.');
+    } catch (e) {
+      job.log(`Could not reload the reportbee tab automatically (${e.message}) -- refresh it manually to see the changes.`);
+    }
     job.setStatus('done', { results: job.subjectResults });
   });
 }
