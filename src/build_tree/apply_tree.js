@@ -513,26 +513,39 @@ function findAnyAssessmentOrStandardTemplate(liveTopics, preferStandardUuid, tar
 // registering each nested node into the SAME shared creates/labels this
 // whole plan uses -- the common leaf case (no nested split) skips this
 // entirely, since targetAsm.assessments is empty/absent there.
-function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate, targetNames, creates, labels) {
+//
+// short_name follows a fixed per-level lettering scheme rather than the
+// node's own (truncated) name: Topics are A1/A2/..., Standards B1/B2/...,
+// the first assessment level C1/C2/..., and any further nested split one
+// letter deeper still (D1/D2/..., E1/E2/...), via depth (0 = Topic).
+// Numbering restarts at 1 under each parent -- e.g. every topic's own
+// standards start again at B1, not continuing from the previous topic's
+// count -- so `seq` is always this node's 1-based position among its own
+// siblings, passed down fresh by each caller's loop rather than accumulated
+// globally.
+function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallbackTemplate, targetNames, creates, labels, depth, seq) {
   const template = findNearbyAssessmentTemplate(liveTopics, parentUuid)
     || fallbackTemplate
     || findAnyAssessmentOrStandardTemplate(liveTopics, parentUuid, targetNames);
   if (!template) return { node: null, label: `[assessment, NO TEMPLATE AVAILABLE] "${targetAsm.name}" — skipped, nothing in this subject to clone from` };
   const uuid = crypto.randomUUID();
+  const shortName = `${String.fromCharCode(65 + depth)}${seq}`;
 
   const nestedOrder = { n: 0 };
+  let nestedSeq = 0;
   const nestedChildUuids = [];
   for (const nested of (targetAsm.assessments || [])) {
     nestedOrder.n += 10;
+    nestedSeq += 1;
     const { node: nestedNode, label: nestedLabel } = createAssessment(
-      liveTopics, nested, uuid, nestedOrder.n, nested.mark_entry_mode, template, targetNames, creates, labels
+      liveTopics, nested, uuid, nestedOrder.n, nested.mark_entry_mode, template, targetNames, creates, labels, depth + 1, nestedSeq
     );
     labels.push(nestedLabel);
     if (nestedNode) { creates[nestedNode.uuid] = nestedNode; nestedChildUuids.push(nestedNode.uuid); }
   }
 
   const node = cloneAsNew(template, {
-    uuid, name: targetAsm.name, short_name: targetAsm.name.slice(0, 10),
+    uuid, name: targetAsm.name, short_name: shortName,
     parent_uuid: parentUuid, children_uuids: nestedChildUuids, order,
     conversion_score: targetAsm.weightage != null ? targetAsm.weightage : template.conversion_score,
     should_convert: true,
@@ -570,20 +583,22 @@ function createAssessment(liveTopics, targetAsm, parentUuid, order, mode, fallba
 // higher in the tree (the existing type:"assessment" fallback below
 // already relies on that same fact) -- valid to clone from directly
 // rather than failing when nothing more specific exists.
-function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate, targetNames, subjectGradeTemplateId) {
+function createStandard(liveTopics, targetStd, parentUuid, order, creates, labels, fallbackTemplate, targetNames, subjectGradeTemplateId, seq) {
   const template = findStandardTemplate(liveTopics, parentUuid, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[standard, NO TEMPLATE AVAILABLE] "${targetStd.name}" — skipped, nothing in this subject to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const asmOrder = { n: 0 };
+  let asmSeq = 0;
   const childUuids = [];
   for (const targetAsm of targetStd.assessments) {
     asmOrder.n += 10;
-    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template, targetNames, creates, labels);
+    asmSeq += 1;
+    const { node, label } = createAssessment(liveTopics, targetAsm, uuid, asmOrder.n, targetAsm.mark_entry_mode, template, targetNames, creates, labels, 2, asmSeq);
     labels.push(label);
     if (node) { creates[node.uuid] = node; childUuids.push(node.uuid); }
   }
   const node = cloneAsNew(template, {
-    uuid, name: targetStd.name, short_name: targetStd.name.slice(0, 10),
+    uuid, name: targetStd.name, short_name: `B${seq}`,
     parent_uuid: parentUuid, children_uuids: childUuids, order,
     conversion_score: targetStd.weightage != null ? targetStd.weightage : template.conversion_score,
     should_convert: true,
@@ -639,19 +654,21 @@ function createStandard(liveTopics, targetStd, parentUuid, order, creates, label
 // elsewhere) -- `type` is forced to "regular_paper" explicitly below,
 // unconditionally, rather than trusting whichever template (sibling or
 // wrapper) happened to supply it.
-function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames, fallbackTemplate, subjectGradeTemplateId) {
+function createTopic(liveTopics, targetTopic, topicName, parentUuid, order, creates, labels, targetNames, fallbackTemplate, subjectGradeTemplateId, seq) {
   const template = findTopicTemplate(liveTopics, targetNames) || fallbackTemplate;
   if (!template) { labels.push(`[topic, NO TEMPLATE AVAILABLE] "${topicName}" — skipped, subject has no existing topic to clone from`); return null; }
   const uuid = crypto.randomUUID();
   const stdOrder = { n: 0 };
+  let stdSeq = 0;
   const childUuids = [];
   for (const targetStd of targetTopic.standards) {
     stdOrder.n += 10;
-    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template, targetNames, subjectGradeTemplateId);
+    stdSeq += 1;
+    const node = createStandard(liveTopics, targetStd, uuid, stdOrder.n, creates, labels, template, targetNames, subjectGradeTemplateId, stdSeq);
     if (node) childUuids.push(node.uuid);
   }
   const node = cloneAsNew(template, {
-    uuid, name: topicName, short_name: topicName.slice(0, 10),
+    uuid, name: topicName, short_name: `A${seq}`,
     parent_uuid: parentUuid, children_uuids: childUuids, order,
     conversion_score: targetTopic.weightage != null ? targetTopic.weightage : template.conversion_score,
     should_convert: true,
@@ -841,14 +858,20 @@ function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplat
   }
 
   let order = 10;
+  // topicSeq is this topic's 1-based position among ALL of the subject's
+  // target topics (from the xlsx's own order), not just the ones actually
+  // being recreated this run -- so a topic's A-number stays the same across
+  // runs regardless of which of its siblings happened to need a rebuild.
+  let topicSeq = 0;
   for (const [topicName, targetTopic] of Object.entries(targetTopics)) {
+    topicSeq += 1;
     const liveTopic = liveByName.get(topicName);
     if (liveTopic && topicUnchanged(liveTopic, targetTopic, forceRebuild, subjectGradeTemplateId)) {
       order += 10;
       continue;
     }
     const labels = [];
-    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames, subjectFallbackTemplate, subjectGradeTemplateId);
+    createTopic(liveTopics, targetTopic, topicName, subjectUuid, order, plan.creates, labels, targetNames, subjectFallbackTemplate, subjectGradeTemplateId, topicSeq);
     for (const l of labels) plan.needsCreation.push({ label: l });
     order += 10;
   }
