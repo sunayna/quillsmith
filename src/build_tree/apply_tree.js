@@ -408,7 +408,25 @@ async function readLiveTree(page, ctx, subjectUuid) {
   const subjectFull = await fetchFullNode(page, ctx, subjectUuid);
   const subjectGradeTemplateId = subjectFull ? subjectFull.grade_template_id : null;
 
-  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId };
+  // Returned as `subjectNode` for the caller to use as a LAST-RESORT clone
+  // template (see its own use at the call site) -- a subject with genuinely
+  // nothing under it at all (no sibling topic, no protected wrapper either)
+  // used to report NO TEMPLATE AVAILABLE for every topic, needing one
+  // created by hand in reportbee first just to give the script something to
+  // copy (see createTopic's own comment on why a template is needed at
+  // all). The subject node is always present by construction -- we already
+  // navigated to it and read its uuid above -- and structurally it's the
+  // exact same shape createTopic already trusts as a fallback template: a
+  // protected wrapper (see protectedParentNode above) is itself just a
+  // course_paper node, the same type this subject node carries, and
+  // createTopic already forces type/use_for_aggregation/use_for_total
+  // explicitly on whatever it clones from regardless of the template's own
+  // values (see its own comment) -- so cloning from the subject itself
+  // needs no special-casing beyond being offered as a fallback here. NOT
+  // yet confirmed live against reportbee (no bare subject has been run
+  // through this path yet) -- worth double-checking the first real result
+  // carefully rather than trusting this blindly.
+  return { topics: tree, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectNode: subjectFull, subjectGradeTemplateId };
 }
 
 // Creation strategy validated on Module (Seasons/Metals and Non-metals):
@@ -1205,7 +1223,7 @@ async function main() {
     }
     const ctx = { baseUrl, planId: liveSubject.plan_id, csrfToken, accessToken, profileId };
 
-    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId } = await readLiveTree(page, ctx, liveSubject.uuid);
+    const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectNode, subjectGradeTemplateId } = await readLiveTree(page, ctx, liveSubject.uuid);
     if (process.env.DEBUG_TREE) {
       console.log('\n🔎 Live tree read:');
       if (protectedParentUuid) console.log(`  (new topics will be created under protected wrapper ${protectedParentUuid}, not the subject itself)`);
@@ -1219,7 +1237,12 @@ async function main() {
         }
       }
     }
-    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode, process.env.FORCE_REBUILD, subjectGradeTemplateId);
+    // protectedParentNode (a real linked wrapper) wins when both exist --
+    // subjectNode (the subject itself) only ever kicks in as the LAST
+    // resort, for a subject with no sibling topic AND no wrapper at all
+    // (see readLiveTree's own comment on subjectNode for why this is safe).
+    const fallbackTemplate = protectedParentNode || subjectNode;
+    const plan = buildPlan(liveTopics, target[subjectName], protectedParentUuid || liveSubject.uuid, fallbackTemplate, process.env.FORCE_REBUILD, subjectGradeTemplateId);
     for (const uuid of wrapperUuidsToDelete) {
       plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
     }
