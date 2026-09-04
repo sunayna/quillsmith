@@ -442,6 +442,7 @@ document.getElementById('tree-start-btn').onclick = async () => {
   const subjectFilter = document.getElementById('tree-subject-filter').value.trim();
   const forceApply = document.getElementById('tree-force-apply').checked;
   const applyWorkEthicsWeight = document.getElementById('tree-apply-work-ethics').checked;
+  const autoApply = document.getElementById('tree-auto-apply').checked;
   const fileInput = document.getElementById('tree-file');
   const errorEl = document.getElementById('tree-form-error');
   errorEl.classList.add('hidden');
@@ -465,6 +466,7 @@ document.getElementById('tree-start-btn').onclick = async () => {
   formData.append('subjectFilter', subjectFilter);
   formData.append('forceApply', forceApply ? 'true' : 'false');
   formData.append('applyWorkEthicsWeight', applyWorkEthicsWeight ? 'true' : 'false');
+  formData.append('autoApply', autoApply ? 'true' : 'false');
   formData.append('treeFile', fileInput.files[0]);
 
   const res = await fetch('/api/tree/run', { method: 'POST', body: formData });

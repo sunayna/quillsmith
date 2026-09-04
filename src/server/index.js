@@ -407,8 +407,18 @@ async function advanceToNextSubject(job) {
       }
       const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
 
-      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectGradeTemplateId } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
-      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, protectedParentNode, job.forceRebuild, subjectGradeTemplateId, job.targetWorkEthicsWeight);
+      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectNode, subjectGradeTemplateId } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
+      // protectedParentNode (a real linked wrapper, e.g. SEL) wins when both
+      // exist -- subjectNode (the subject's own record) is only a LAST
+      // resort, for a subject with no sibling topic AND no wrapper at all
+      // (a bare SEN subject). Mirrors the same fallback in apply_tree.js's
+      // own main() (see readLiveTree's comment there) -- this web-server
+      // path had fallen out of sync with the CLI and was still passing
+      // protectedParentNode alone, so a bare subject applied through the
+      // web UI still failed with NO TEMPLATE AVAILABLE even after the CLI
+      // fix (0e8f59f) landed.
+      const fallbackTemplate = protectedParentNode || subjectNode;
+      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, fallbackTemplate, job.forceRebuild, subjectGradeTemplateId, job.targetWorkEthicsWeight);
       for (const uuid of wrapperUuidsToDelete) {
         plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
       }
@@ -437,6 +447,16 @@ async function advanceToNextSubject(job) {
           job.log('Nothing to apply for this subject.');
           job.subjectResults.push({ subject: subjectName, outcome: 'no-changes' });
         }
+        continue;
+      }
+
+      // Normally pauses here for an explicit per-subject Apply/Skip (see the
+      // block comment above runTreePipeline on why review is the default).
+      // With job.autoApply set (the "Apply all subjects automatically"
+      // checkbox), skip straight to saving this plan and move on to the
+      // next subject in the same loop iteration -- no dialog, no pause.
+      if (job.autoApply) {
+        await applyPlan(job, subjectName, ctx, plan);
         continue;
       }
 
@@ -474,37 +494,44 @@ async function advanceToNextSubject(job) {
   });
 }
 
+// Shared by the manual Apply button (applySubjectDecision, below) and the
+// "Apply all subjects automatically" auto-apply path in
+// advanceToNextSubject -- both just need to turn a computed plan into a
+// saved one and record the outcome; the only difference between them is
+// what happens before this runs (a dialog wait vs. nothing).
+async function applyPlan(job, subjectName, ctx, plan) {
+  const updateList = Object.values(plan.updates);
+  const createList = Object.values(plan.creates);
+  const updates = {};
+  for (const u of updateList) {
+    const { _label, ...clean } = u;
+    updates[u.uuid] = clean;
+  }
+  for (const node of createList) updates[node.uuid] = node;
+  const deleteUuids = plan.deletes.flatMap((d) => [d.uuid, ...(d.children || [])]);
+
+  // The plan was computed earlier (possibly while the reviewer sat on
+  // the awaiting-subject-decision dialog for a while) -- re-verify the
+  // page hasn't drifted to a different section in the meantime before
+  // actually saving. See assertOnGradeSection's own comment for why
+  // this matters: this tab is a real, interactive browser window.
+  await treeLib.assertOnGradeSection(job.page, job.gradeSectionLabel, `immediately before saving "${subjectName}"`);
+  const result = await treeLib.saveStructureTwoPhase(job.page, ctx, { update: updates, deleteUuids });
+  if (result.json && result.json.status) {
+    job.log(`✅ ${subjectName}: ${result.json.message || 'applied'}`);
+    job.subjectResults.push({ subject: subjectName, outcome: 'applied' });
+  } else {
+    job.log(`❌ ${subjectName}: ${JSON.stringify(result.json || result.rawText)}`);
+    job.subjectResults.push({ subject: subjectName, outcome: 'apply-failed' });
+  }
+}
+
 async function applySubjectDecision(job, action) {
   const { subjectName, ctx, plan } = job.pendingSubject;
   job.pendingSubject = null;
 
   if (action === 'apply') {
-    await withCapturedConsole(job, async () => {
-      const updateList = Object.values(plan.updates);
-      const createList = Object.values(plan.creates);
-      const updates = {};
-      for (const u of updateList) {
-        const { _label, ...clean } = u;
-        updates[u.uuid] = clean;
-      }
-      for (const node of createList) updates[node.uuid] = node;
-      const deleteUuids = plan.deletes.flatMap((d) => [d.uuid, ...(d.children || [])]);
-
-      // The plan was computed earlier (possibly while the reviewer sat on
-      // the awaiting-subject-decision dialog for a while) -- re-verify the
-      // page hasn't drifted to a different section in the meantime before
-      // actually saving. See assertOnGradeSection's own comment for why
-      // this matters: this tab is a real, interactive browser window.
-      await treeLib.assertOnGradeSection(job.page, job.gradeSectionLabel, `immediately before saving "${subjectName}"`);
-      const result = await treeLib.saveStructureTwoPhase(job.page, ctx, { update: updates, deleteUuids });
-      if (result.json && result.json.status) {
-        job.log(`✅ ${subjectName}: ${result.json.message || 'applied'}`);
-        job.subjectResults.push({ subject: subjectName, outcome: 'applied' });
-      } else {
-        job.log(`❌ ${subjectName}: ${JSON.stringify(result.json || result.rawText)}`);
-        job.subjectResults.push({ subject: subjectName, outcome: 'apply-failed' });
-      }
-    });
+    await withCapturedConsole(job, () => applyPlan(job, subjectName, ctx, plan));
   } else {
     job.log(`Skipped ${subjectName} (not applied).`);
     job.subjectResults.push({ subject: subjectName, outcome: 'skipped' });
@@ -810,7 +837,7 @@ app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {
   if (activeJob) {
     return res.status(409).json({ error: 'A run is already in progress', jobId: activeJob.id });
   }
-  const { gradeSection, term, year, planType, subjectFilter, forceApply, applyWorkEthicsWeight } = req.body || {};
+  const { gradeSection, term, year, planType, subjectFilter, forceApply, applyWorkEthicsWeight, autoApply } = req.body || {};
   if (!gradeSection || !term || !year) {
     return res.status(400).json({ error: 'Grade & Section, Term, and Year are all required' });
   }
@@ -826,6 +853,7 @@ app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {
   job.subjectFilter = subjectFilter || '';
   job.forceRebuild = forceApply === 'true' || forceApply === true;
   job.applyWorkEthicsWeight = applyWorkEthicsWeight === 'true' || applyWorkEthicsWeight === true;
+  job.autoApply = autoApply === 'true' || autoApply === true;
   job.treeXlsxPath = req.file.path;
   activeJob = job;
   res.json({ jobId: job.id });

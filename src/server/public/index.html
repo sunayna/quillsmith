@@ -75,7 +75,7 @@
 
   <section id="tree-form-section" class="card hidden">
     <h2>Apply a tree workbook</h2>
-    <p class="subtitle">Parses a filled-in "ASSESSMENT TREES" workbook and writes the Topic/Standard/Assessment structure into reportbee's live Build Structure tree for a grade/section. This deletes and recreates existing nodes for each subject you apply — you'll review every subject's plan before anything is saved.</p>
+    <p class="subtitle">Parses a filled-in "ASSESSMENT TREES" workbook and writes the Topic/Standard/Assessment structure into reportbee's live Build Structure tree for a grade/section. This deletes and recreates existing nodes for each subject you apply — by default you'll review every subject's plan before anything is saved, unless you check "Apply all subjects automatically" below.</p>
     <div class="field-row">
       <label>Grade &amp; Section
         <input id="tree-gradesection" type="text" placeholder="e.g. VII A">
@@ -109,6 +109,10 @@
       <label class="checkbox-label" title="Reads the 'Work Ethics' value from the workbook's Scoring Guide sheet and, for every subject where it differs, updates just that one node's weight (a scoped patch — Work Ethics is otherwise never touched by this tool). Leave unchecked for a normal run.">
         <input id="tree-apply-work-ethics" type="checkbox">
         Update Work Ethics weight from Scoring Guide sheet
+      </label>
+      <label class="checkbox-label" title="Applies every subject's plan as soon as it's computed, without pausing to show you a review dialog first. Faster for a run you already trust, but you won't get a chance to skip an individual subject before it's saved.">
+        <input id="tree-auto-apply" type="checkbox">
+        Apply all subjects automatically (skip the review step)
       </label>
     </div>
     <button id="tree-start-btn" class="accent-violet">Start tree apply</button>
