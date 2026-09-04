@@ -1028,7 +1028,21 @@ function formatYearRootLabel(yearLabel) {
 // {uuid, name} update (no full-record clone needed -- confirmed elsewhere
 // this session that partial updates work fine for existing nodes) is all a
 // rename needs.
-async function ensureYearRootLabel(page, ctx, yearLabel) {
+// Finds the root node (matched by its "YYYY - YY" label) and expands it if
+// it's currently collapsed. Pulled out of ensureYearRootLabel so a caller
+// can force this open BEFORE searching the DOM for anything beneath the
+// root, not only afterward -- see this function's own use at the top of
+// main() and advanceToNextSection (index.js) for why that ordering matters.
+//
+// A genuinely fresh plan (confirmed live: a SEN plan never opened before
+// this session) lands with its root collapsed and nothing beneath it
+// rendered at all, unlike an Academic plan that's typically already been
+// expanded from earlier interactions -- expand it here so Term 1/2 actually
+// exist in the DOM for a subsequent findFullLabel call, rather than relying
+// on incidental prior expansion. SEN plans get opened far less often than
+// Academic ones, which is why this shows up as a SEN-specific problem even
+// though nothing about the fix below is SEN-specific.
+async function expandYearRoot(page) {
   const match = await page.evaluate(() => {
     for (const g of document.querySelectorAll('g.node')) {
       const nameEl = g.querySelector('text.node-name');
@@ -1039,20 +1053,19 @@ async function ensureYearRootLabel(page, ctx, yearLabel) {
     }
     return null;
   });
-  if (!match) {
-    console.warn('⚠️  Could not find a year-labeled root node to check -- skipping.');
-    return;
-  }
-
-  // A genuinely fresh plan (confirmed live: a SEN plan never opened before
-  // this session) lands with its root collapsed and nothing beneath it
-  // rendered at all, unlike an Academic plan that's typically already been
-  // expanded from earlier interactions -- expand it here so Term 1/2
-  // actually exist in the DOM for the caller's subsequent findFullLabel
-  // calls, rather than relying on incidental prior expansion.
+  if (!match) return null;
   if (await isExpandable(page, match.name)) {
     await expandNode(page, match.name);
     await delay(500);
+  }
+  return match;
+}
+
+async function ensureYearRootLabel(page, ctx, yearLabel) {
+  const match = await expandYearRoot(page);
+  if (!match) {
+    console.warn('⚠️  Could not find a year-labeled root node to check -- skipping.');
+    return;
   }
 
   const expectedLabel = formatYearRootLabel(yearLabel);
@@ -1158,6 +1171,14 @@ async function main() {
 
   const { baseUrl, planId } = getPageContext(page);
   const csrfToken = await getCsrfToken(page);
+
+  // Force the root open before searching for anything beneath it -- a
+  // fresh/rarely-opened plan (SEN especially) can land with the root
+  // collapsed and nothing rendered at all, which would otherwise make the
+  // very first findFullLabel(termLabel) below fail every time (see
+  // expandYearRoot's own comment). Safe to call unconditionally: it's a
+  // no-op once the root is already expanded.
+  await expandYearRoot(page);
 
   // One-time check, before touching any subject: the tree's own top-level
   // Year node commonly carries a stale name from whenever this year's plan
@@ -1325,7 +1346,7 @@ async function main() {
 }
 
 module.exports = {
-  ensureYearRootLabel, parseTreeXlsx, readWorkEthicsWeight, navigateToSubject, readLiveSubject,
+  ensureYearRootLabel, expandYearRoot, parseTreeXlsx, readWorkEthicsWeight, navigateToSubject, readLiveSubject,
   readLiveTree, buildPlan, saveStructure, saveStructureTwoPhase, guessTermLabel, guessYearLabel,
   findDefaultTreeFile, currentGradeSectionLabel, assertOnGradeSection,
   SKIP_SUBJECTS: [],

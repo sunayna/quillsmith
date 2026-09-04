@@ -411,6 +411,18 @@ async function advanceToNextSection(job) {
     job.planId = planId;
     job.csrfToken = await getCsrfToken(page);
 
+    // Force the root open before searching for anything beneath it -- a
+    // fresh/rarely-opened plan (SEN especially) can land with the root
+    // collapsed and nothing rendered at all, which would otherwise make
+    // the very first findFullLabel(job.term) below fail every time (see
+    // expandYearRoot's own comment in apply_tree.js). This was the actual
+    // cause of "Could not find Term ... skipping that check" showing up
+    // consistently on SEN runs -- ensureYearRootLabel is the function that
+    // expands the root, but it only ran AFTER the Term was already found,
+    // which a collapsed root makes impossible. Safe to call unconditionally
+    // here too -- a no-op once the root is already expanded.
+    await treeLib.expandYearRoot(page);
+
     // Term-level access token: re-sampled for every section switched to
     // (switchGradeSection navigates the page, which invalidates whatever
     // was sampled for the PREVIOUS section) -- still cached and reused
