@@ -368,6 +368,89 @@ async function runTreePipeline(job) {
   }
 }
 
+// Everything about landing on a section's tree and getting ready to read
+// the first subject: switch to it, sample a fresh baseUrl/planId/csrfToken
+// (switchGradeSection navigates the page, invalidating whatever the
+// previous section had), force the year root open, and sample/cache a
+// Term-level access token. Pulled out of advanceToNextSection so
+// reconnectAndResumeSection (below) can redo exactly this same setup on a
+// fresh page after a dropped connection, without re-touching
+// job.subjectQueue/job.subjectResults -- those track progress THROUGH the
+// section and must survive a reconnect untouched.
+async function setupSectionPage(job, page, grade, section) {
+  await switchGradeSection(page, grade, section, job.planType);
+
+  const { baseUrl, planId } = getPageContext(page);
+  job.baseUrl = baseUrl;
+  job.planId = planId;
+  job.csrfToken = await getCsrfToken(page);
+
+  // Force the root open before searching for anything beneath it -- a
+  // fresh/rarely-opened plan (SEN especially) can land with the root
+  // collapsed and nothing rendered at all, which would otherwise make
+  // the very first findFullLabel(job.term) below fail every time (see
+  // expandYearRoot's own comment in apply_tree.js). This was the actual
+  // cause of "Could not find Term ... skipping that check" showing up
+  // consistently on SEN runs -- ensureYearRootLabel is the function that
+  // expands the root, but it only ran AFTER the Term was already found,
+  // which a collapsed root makes impossible. Safe to call unconditionally
+  // here too -- a no-op once the root is already expanded.
+  await treeLib.expandYearRoot(page);
+
+  // Term-level access token: re-sampled for every section switched to
+  // (switchGradeSection navigates the page, which invalidates whatever
+  // was sampled for the PREVIOUS section) -- still cached and reused
+  // across every subject WITHIN this one section, same as before.
+  job.accessToken = null;
+  job.profileId = null;
+  let termDomLabel = await findFullLabel(page, job.term);
+  if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, job.term); }
+  if (termDomLabel) {
+    const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
+    // access_token/profile_id are session-level, not node-specific (see
+    // sampleAuthParams's own comment) -- cached here so every subject
+    // below reuses this instead of re-sampling from ITS OWN node. That
+    // per-subject re-sampling used to be the only source, which broke
+    // for SEL: its subject-level node ("Socio-Emotional Learning") is a
+    // plain organizational node with no "Enter / View Marks" option at
+    // all (only the linked-ReportPlan wrapper beneath it has that) --
+    // confirmed live, 2026-08-21. The Term node always has it, so
+    // sampling here once per section and reusing sidesteps that
+    // per-subject gap entirely rather than special-casing SEL's node
+    // again.
+    job.accessToken = accessToken;
+    job.profileId = profileId;
+    await treeLib.ensureYearRootLabel(page, { baseUrl, planId, csrfToken: job.csrfToken, accessToken, profileId }, job.year);
+  } else {
+    job.log(`Could not find Term "${job.term}" to check the year root label — skipping that check.`);
+  }
+}
+
+// Puppeteer's connection to the browser/tab can drop mid-run -- confirmed
+// live on a long multi-section batch (crashed 24 subjects in, with
+// "Protocol error (Runtime.callFunctionOn): Target closed"), with no
+// data-specific cause: re-running the exact same section+subject in
+// isolation right after succeeded cleanly. The most likely cause is the
+// debug Chrome tab getting backgrounded/discarded (by Chrome or the OS)
+// during a long unattended run, not a bug in what this tool sends
+// reportbee -- but a crash this deep into a batch used to mean starting the
+// WHOLE run over, even though every already-applied subject was already
+// safely saved and didn't need redoing. isConnectionLostError recognizes
+// the class of Puppeteer errors this produces; reconnectAndResumeSection
+// gives the run one chance to reconnect and pick up exactly where it left
+// off (see its call site in advanceToNextSubject).
+function isConnectionLostError(e) {
+  return /Protocol error|Target closed|Session closed|Connection closed|detached Frame|WebSocket is not open/i.test(e.message || '');
+}
+
+async function reconnectAndResumeSection(job) {
+  job.log('Reconnecting to reportbee...');
+  const page = await connectToReportbeeTab();
+  job.browser = page.browser();
+  job.page = page;
+  await setupSectionPage(job, page, job.grade, job.section);
+}
+
 // Pops the next queued Grade & Section, switches the live tab to it, and
 // kicks off that section's own subject loop (advanceToNextSubject) -- once
 // that loop empties this section's subjectQueue, it comes back here for the
@@ -400,56 +483,11 @@ async function advanceToNextSection(job) {
     if (job.cancelled) throw new Error('Cancelled');
     const { grade, section, gradeSectionLabel } = job.sectionQueue.shift();
     job.grade = grade;
+    job.section = section;
     job.gradeSectionLabel = gradeSectionLabel;
     job.log(`── ${gradeSectionLabel} ──`);
 
-    const page = job.page;
-    await switchGradeSection(page, grade, section, job.planType);
-
-    const { baseUrl, planId } = getPageContext(page);
-    job.baseUrl = baseUrl;
-    job.planId = planId;
-    job.csrfToken = await getCsrfToken(page);
-
-    // Force the root open before searching for anything beneath it -- a
-    // fresh/rarely-opened plan (SEN especially) can land with the root
-    // collapsed and nothing rendered at all, which would otherwise make
-    // the very first findFullLabel(job.term) below fail every time (see
-    // expandYearRoot's own comment in apply_tree.js). This was the actual
-    // cause of "Could not find Term ... skipping that check" showing up
-    // consistently on SEN runs -- ensureYearRootLabel is the function that
-    // expands the root, but it only ran AFTER the Term was already found,
-    // which a collapsed root makes impossible. Safe to call unconditionally
-    // here too -- a no-op once the root is already expanded.
-    await treeLib.expandYearRoot(page);
-
-    // Term-level access token: re-sampled for every section switched to
-    // (switchGradeSection navigates the page, which invalidates whatever
-    // was sampled for the PREVIOUS section) -- still cached and reused
-    // across every subject WITHIN this one section, same as before.
-    job.accessToken = null;
-    job.profileId = null;
-    let termDomLabel = await findFullLabel(page, job.term);
-    if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, job.term); }
-    if (termDomLabel) {
-      const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
-      // access_token/profile_id are session-level, not node-specific (see
-      // sampleAuthParams's own comment) -- cached here so every subject
-      // below reuses this instead of re-sampling from ITS OWN node. That
-      // per-subject re-sampling used to be the only source, which broke
-      // for SEL: its subject-level node ("Socio-Emotional Learning") is a
-      // plain organizational node with no "Enter / View Marks" option at
-      // all (only the linked-ReportPlan wrapper beneath it has that) --
-      // confirmed live, 2026-08-21. The Term node always has it, so
-      // sampling here once per section and reusing sidesteps that
-      // per-subject gap entirely rather than special-casing SEL's node
-      // again.
-      job.accessToken = accessToken;
-      job.profileId = profileId;
-      await treeLib.ensureYearRootLabel(page, { baseUrl, planId, csrfToken: job.csrfToken, accessToken, profileId }, job.year);
-    } else {
-      job.log(`Could not find Term "${job.term}" to check the year root label — skipping that check.`);
-    }
+    await setupSectionPage(job, job.page, grade, section);
 
     const { target, subjects } = job.targetByGrade[grade];
     job.target = target;
@@ -465,104 +503,126 @@ async function advanceToNextSubject(job) {
     while (job.subjectQueue.length > 0) {
       if (job.cancelled) throw new Error('Cancelled');
       const subjectName = job.subjectQueue.shift();
-      const page = job.page;
-      job.log(`=== ${subjectName} ===`);
+      try {
+        const page = job.page;
+        job.log(`=== ${subjectName} ===`);
 
-      await treeLib.assertOnGradeSection(page, job.gradeSectionLabel, `before processing "${subjectName}"`);
-      const liveName = await treeLib.navigateToSubject(page, job.term, subjectName);
-      if (!liveName) {
-        job.log(`Could not find "${subjectName}" under Term "${job.term}".`);
-        job.subjectResults.push({ subject: subjectName, outcome: 'not-found' });
-        continue;
-      }
-      if (liveName !== subjectName) job.log(`(matched to live subject "${liveName}")`);
-
-      const liveSubject = await treeLib.readLiveSubject(page, liveName);
-      if (!liveSubject) {
-        job.log(`Found "${liveName}" but couldn't read its data.`);
-        job.subjectResults.push({ subject: subjectName, outcome: 'read-failed' });
-        continue;
-      }
-
-      // Reuse the Term-level token cached in runTreePipeline when
-      // available (see its own comment) instead of re-sampling from this
-      // subject's own node -- falls back to per-subject sampling only if
-      // that initial cache attempt didn't happen (e.g. the Term node
-      // itself couldn't be found).
-      let accessToken = job.accessToken, profileId = job.profileId;
-      if (!accessToken || !profileId) {
-        const domLabel = await findFullLabel(page, liveName) || liveName;
-        ({ accessToken, profileId } = await sampleAuthParams(page, domLabel));
-        job.accessToken = accessToken;
-        job.profileId = profileId;
-      }
-      const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
-
-      const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectNode, subjectGradeTemplateId } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
-      // protectedParentNode (a real linked wrapper, e.g. SEL) wins when both
-      // exist -- subjectNode (the subject's own record) is only a LAST
-      // resort, for a subject with no sibling topic AND no wrapper at all
-      // (a bare SEN subject). Mirrors the same fallback in apply_tree.js's
-      // own main() (see readLiveTree's comment there) -- this web-server
-      // path had fallen out of sync with the CLI and was still passing
-      // protectedParentNode alone, so a bare subject applied through the
-      // web UI still failed with NO TEMPLATE AVAILABLE even after the CLI
-      // fix (0e8f59f) landed.
-      const fallbackTemplate = protectedParentNode || subjectNode;
-      const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, fallbackTemplate, job.forceRebuild, subjectGradeTemplateId, job.targetWorkEthicsWeight);
-      for (const uuid of wrapperUuidsToDelete) {
-        plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
-      }
-
-      const updateList = Object.values(plan.updates);
-      const createList = Object.values(plan.creates);
-      if (plan.unchanged.length) {
-        job.log(`${plan.unchanged.length} topic(s) already match the xlsx, left untouched: ${plan.unchanged.join(', ')}`);
-      }
-
-      if (updateList.length === 0 && plan.deletes.length === 0 && createList.length === 0) {
-        // See apply_tree.js's own comment on this same split (CONFIRMED
-        // live, 2026-08-21, Grade V-A SEL) -- the web UI previously didn't
-        // even log plan.needsCreation's labels here at all, so a subject
-        // where every topic failed with NO TEMPLATE AVAILABLE (nothing
-        // anywhere to clone from -- usually never built at all) was
-        // completely silent about it, reading identically to "already
-        // correct".
-        const failed = plan.needsCreation.filter((c) => c.label.includes('NO TEMPLATE AVAILABLE'));
-        if (failed.length > 0) {
-          job.log(`⚠️ Nothing was actually created — ${failed.length} creation(s) failed (NO TEMPLATE AVAILABLE):`);
-          for (const f of failed) job.log(`  ${f.label}`);
-          job.log('This subject likely has no existing structure anywhere to clone from yet.');
-          job.subjectResults.push({ subject: subjectName, outcome: 'creation-failed' });
-        } else {
-          job.log('Nothing to apply for this subject.');
-          job.subjectResults.push({ subject: subjectName, outcome: 'no-changes' });
+        await treeLib.assertOnGradeSection(page, job.gradeSectionLabel, `before processing "${subjectName}"`);
+        const liveName = await treeLib.navigateToSubject(page, job.term, subjectName);
+        if (!liveName) {
+          job.log(`Could not find "${subjectName}" under Term "${job.term}".`);
+          job.subjectResults.push({ subject: subjectName, outcome: 'not-found' });
+          continue;
         }
-        continue;
-      }
+        if (liveName !== subjectName) job.log(`(matched to live subject "${liveName}")`);
 
-      // Normally pauses here for an explicit per-subject Apply/Skip (see the
-      // block comment above runTreePipeline on why review is the default).
-      // With job.autoApply set (the "Apply all subjects automatically"
-      // checkbox), skip straight to saving this plan and move on to the
-      // next subject in the same loop iteration -- no dialog, no pause.
-      if (job.autoApply) {
-        await applyPlan(job, subjectName, ctx, plan);
-        continue;
-      }
+        const liveSubject = await treeLib.readLiveSubject(page, liveName);
+        if (!liveSubject) {
+          job.log(`Found "${liveName}" but couldn't read its data.`);
+          job.subjectResults.push({ subject: subjectName, outcome: 'read-failed' });
+          continue;
+        }
 
-      job.pendingSubject = { subjectName, ctx, plan };
-      job.setStatus('awaiting-subject-decision', {
-        subjectName,
-        gradeSectionLabel: job.gradeSectionLabel,
-        remaining: job.subjectQueue.length,
-        sectionsRemaining: job.sectionQueue.length,
-        unchanged: plan.unchanged,
-        updates: updateList.map((u) => u._label),
-        deletes: plan.deletes.map((d) => d.label),
-        creates: plan.needsCreation.map((c) => c.label),
-      });
-      return;
+        // Reuse the Term-level token cached in runTreePipeline when
+        // available (see its own comment) instead of re-sampling from this
+        // subject's own node -- falls back to per-subject sampling only if
+        // that initial cache attempt didn't happen (e.g. the Term node
+        // itself couldn't be found).
+        let accessToken = job.accessToken, profileId = job.profileId;
+        if (!accessToken || !profileId) {
+          const domLabel = await findFullLabel(page, liveName) || liveName;
+          ({ accessToken, profileId } = await sampleAuthParams(page, domLabel));
+          job.accessToken = accessToken;
+          job.profileId = profileId;
+        }
+        const ctx = { baseUrl: job.baseUrl, planId: liveSubject.plan_id, csrfToken: job.csrfToken, accessToken, profileId };
+
+        const { topics: liveTopics, wrapperUuidsToDelete, protectedParentUuid, protectedParentNode, subjectNode, subjectGradeTemplateId } = await treeLib.readLiveTree(page, ctx, liveSubject.uuid);
+        // protectedParentNode (a real linked wrapper, e.g. SEL) wins when both
+        // exist -- subjectNode (the subject's own record) is only a LAST
+        // resort, for a subject with no sibling topic AND no wrapper at all
+        // (a bare SEN subject). Mirrors the same fallback in apply_tree.js's
+        // own main() (see readLiveTree's comment there) -- this web-server
+        // path had fallen out of sync with the CLI and was still passing
+        // protectedParentNode alone, so a bare subject applied through the
+        // web UI still failed with NO TEMPLATE AVAILABLE even after the CLI
+        // fix (0e8f59f) landed.
+        const fallbackTemplate = protectedParentNode || subjectNode;
+        const plan = treeLib.buildPlan(liveTopics, job.target[subjectName], protectedParentUuid || liveSubject.uuid, fallbackTemplate, job.forceRebuild, subjectGradeTemplateId, job.targetWorkEthicsWeight);
+        for (const uuid of wrapperUuidsToDelete) {
+          plan.deletes.push({ uuid, label: '[wrapper, deleted] redundant course_paper pass-through node' });
+        }
+
+        const updateList = Object.values(plan.updates);
+        const createList = Object.values(plan.creates);
+        if (plan.unchanged.length) {
+          job.log(`${plan.unchanged.length} topic(s) already match the xlsx, left untouched: ${plan.unchanged.join(', ')}`);
+        }
+
+        if (updateList.length === 0 && plan.deletes.length === 0 && createList.length === 0) {
+          // See apply_tree.js's own comment on this same split (CONFIRMED
+          // live, 2026-08-21, Grade V-A SEL) -- the web UI previously didn't
+          // even log plan.needsCreation's labels here at all, so a subject
+          // where every topic failed with NO TEMPLATE AVAILABLE (nothing
+          // anywhere to clone from -- usually never built at all) was
+          // completely silent about it, reading identically to "already
+          // correct".
+          const failed = plan.needsCreation.filter((c) => c.label.includes('NO TEMPLATE AVAILABLE'));
+          if (failed.length > 0) {
+            job.log(`⚠️ Nothing was actually created — ${failed.length} creation(s) failed (NO TEMPLATE AVAILABLE):`);
+            for (const f of failed) job.log(`  ${f.label}`);
+            job.log('This subject likely has no existing structure anywhere to clone from yet.');
+            job.subjectResults.push({ subject: subjectName, outcome: 'creation-failed' });
+          } else {
+            job.log('Nothing to apply for this subject.');
+            job.subjectResults.push({ subject: subjectName, outcome: 'no-changes' });
+          }
+          continue;
+        }
+
+        // Normally pauses here for an explicit per-subject Apply/Skip (see
+        // the block comment above runTreePipeline on why review is the
+        // default). With job.autoApply set (the "Apply all subjects
+        // automatically" checkbox), skip straight to saving this plan and
+        // move on to the next subject in the same loop iteration -- no
+        // dialog, no pause.
+        if (job.autoApply) {
+          await applyPlan(job, subjectName, ctx, plan);
+          continue;
+        }
+
+        job.pendingSubject = { subjectName, ctx, plan };
+        job.setStatus('awaiting-subject-decision', {
+          subjectName,
+          gradeSectionLabel: job.gradeSectionLabel,
+          remaining: job.subjectQueue.length,
+          sectionsRemaining: job.sectionQueue.length,
+          unchanged: plan.unchanged,
+          updates: updateList.map((u) => u._label),
+          deletes: plan.deletes.map((d) => d.label),
+          creates: plan.needsCreation.map((c) => c.label),
+        });
+        return;
+      } catch (e) {
+        // A dropped Puppeteer connection (see isConnectionLostError's own
+        // comment) gets one recovery attempt per occurrence, capped overall
+        // so a persistently broken environment still fails loudly instead
+        // of retrying forever -- any other error (a real bug, a reportbee
+        // rejection, Cancelled) is NOT this class of failure and rethrows
+        // immediately, same as before this try/catch existed.
+        if (job.cancelled || !isConnectionLostError(e)) throw e;
+        job.reconnectCount = (job.reconnectCount || 0) + 1;
+        if (job.reconnectCount > 3) {
+          throw new Error(`Lost connection to reportbee too many times in this run (${e.message}). Make sure the debug Chrome tab is still open and logged in, then start a new run -- subjects already applied before this point are already saved and don't need to be redone.`);
+        }
+        job.log(`⚠️ Lost connection while processing "${subjectName}" (${e.message}) -- reconnecting (attempt ${job.reconnectCount}/3)...`);
+        job.subjectQueue.unshift(subjectName);
+        try {
+          await reconnectAndResumeSection(job);
+        } catch (reconnectErr) {
+          throw new Error(`Could not reconnect to reportbee (${reconnectErr.message}). Make sure the debug Chrome tab is still open and logged in, then start a new run -- subjects already applied before this point are already saved and don't need to be redone.`);
+        }
+      }
     }
 
     job.log(`All subjects processed for ${job.gradeSectionLabel}.`);
