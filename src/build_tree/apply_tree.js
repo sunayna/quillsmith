@@ -357,9 +357,23 @@ async function readLiveTree(page, ctx, subjectUuid) {
       } else {
         wrapperUuidsToDelete.push(ref.uuid);
       }
-      if (ref.hasChildren) {
-        unwrapped.push(...await domChildrenOfUuid(page, ref.uuid));
-      }
+      // CONFIRMED live (reportbee, Grade V, Section H, SEN plan): a wrapper
+      // whose OWN entry in the SUBJECT's cached D3 children list says
+      // hasChildren: false can still have real live children server-side --
+      // "My Swabhav" already existed under SEL's wrapper here, but this
+      // stale flag skipped reading it entirely, so buildPlan never saw it
+      // as an existing topic to delete-and-recreate, only ever tried to
+      // CREATE a fresh one, and reportbee correctly rejected the duplicate
+      // name ("Nodes in the same level shouldn't contain the same name").
+      // domChildrenOfUuid already does its own live check before expanding
+      // (isExpandableByUuid reads the actual DOM button state, not a cached
+      // flag -- same pattern this file already trusts elsewhere, e.g.
+      // isExpandableByUuid itself vs. the D3 hasChildren field), so gating
+      // the call on ref.hasChildren here was redundant AND unsafe -- it
+      // only ever narrowed what got read, never made the read more
+      // reliable. Always attempting the read is strictly safer: a genuinely
+      // childless wrapper still comes back with an empty array either way.
+      unwrapped.push(...await domChildrenOfUuid(page, ref.uuid));
     } else {
       unwrapped.push(ref);
     }
