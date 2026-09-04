@@ -962,8 +962,21 @@ function buildPlan(liveTopics, targetTopics, subjectUuid, subjectFallbackTemplat
   return plan;
 }
 
-async function saveStructure(page, ctx, changes) {
-  return page.evaluate(async (args) => {
+// CONFIRMED live, 2026-09-04 (Grade V?, subject "Module"): reportbee sits
+// behind an nginx gateway that occasionally 502s mid-request under load --
+// the fetch() itself resolves normally (no thrown exception, so this never
+// reaches the Puppeteer-disconnect retry in index.js's advanceToNextSubject
+// catch block), it just comes back with nginx's plain HTML error page
+// instead of JSON. That's indistinguishable from a real rejection to the
+// caller unless we look at the status code, and it previously just failed
+// the subject outright even though a plain retry a moment later almost
+// always goes through fine -- the gateway hiccup, not the request itself,
+// was the problem. Retries a handful of times with a short, increasing
+// delay before giving up and returning the failure as before; any 2xx/4xx
+// response (a real success or a real rejection) returns immediately on the
+// first attempt, unchanged from before this retry existed.
+async function saveStructure(page, ctx, changes, attempt = 1) {
+  const result = await page.evaluate(async (args) => {
     const { baseUrl, planId, csrfToken, accessToken, profileId, changes } = args;
     const body = new URLSearchParams();
     body.set('cp_structure_changes', JSON.stringify(changes));
@@ -980,6 +993,15 @@ async function saveStructure(page, ctx, changes) {
     try { json = JSON.parse(text); } catch (e) { /* not json */ }
     return { status: res.status, json, rawText: json ? null : text.slice(0, 1000) };
   }, { baseUrl: ctx.baseUrl, planId: ctx.planId, csrfToken: ctx.csrfToken, accessToken: ctx.accessToken, profileId: ctx.profileId, changes });
+
+  const isGatewayError = !result.json && result.status >= 500 && result.status < 600;
+  const MAX_ATTEMPTS = 3;
+  if (isGatewayError && attempt < MAX_ATTEMPTS) {
+    console.warn(`⚠️  save_structure_v2 got a ${result.status} gateway error -- retrying (attempt ${attempt + 1}/${MAX_ATTEMPTS})...`);
+    await delay(1500 * attempt);
+    return saveStructure(page, ctx, changes, attempt + 1);
+  }
+  return result;
 }
 
 // reportbee validates "no duplicate name at this level" against a single
