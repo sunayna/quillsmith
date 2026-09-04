@@ -456,6 +456,17 @@ async function reconnectAndResumeSection(job) {
 // that loop empties this section's subjectQueue, it comes back here for the
 // next one. Finishes the whole job once the section queue itself is empty.
 async function advanceToNextSection(job) {
+  // The withCapturedConsole callback below `return`s early in the
+  // "nothing left queued" branch -- that only exits the callback itself,
+  // NOT this outer function, so without this flag the unconditional
+  // `await advanceToNextSubject(job)` after it would still run every time,
+  // which (with subjectQueue/sectionQueue both permanently empty at that
+  // point) recurses into advanceToNextSubject -> back into
+  // advanceToNextSection -> forever, each cycle re-logging "All sections
+  // processed" and re-reloading the live reportbee tab. CONFIRMED live:
+  // exactly this loop, on a completed run. finished is set only in that
+  // terminal branch, so the trailing call is skipped precisely then.
+  let finished = false;
   await withCapturedConsole(job, async () => {
     if (job.sectionQueue.length === 0) {
       job.log('All sections processed.');
@@ -477,6 +488,7 @@ async function advanceToNextSection(job) {
         job.log(`Could not reload the reportbee tab automatically (${e.message}) -- refresh it manually to see the changes.`);
       }
       job.setStatus('done', { sectionResults: job.sectionResults });
+      finished = true;
       return;
     }
 
@@ -495,10 +507,21 @@ async function advanceToNextSection(job) {
     job.subjectResults = [];
   });
 
-  await advanceToNextSubject(job);
+  if (!finished) {
+    await advanceToNextSubject(job);
+  }
 }
 
 async function advanceToNextSubject(job) {
+  // See advanceToNextSection's own comment on this same flag pattern --
+  // the "pause for review" branch below `return`s out of the callback
+  // only, not this outer function, so without this flag the unconditional
+  // `await advanceToNextSection(job)` after it would still fire even while
+  // genuinely paused waiting on a person to click Apply/Skip. paused is
+  // set only in that branch, so the trailing call is skipped precisely
+  // then; applySubjectDecision resumes the queue itself once the decision
+  // comes back.
+  let paused = false;
   await withCapturedConsole(job, async () => {
     while (job.subjectQueue.length > 0) {
       if (job.cancelled) throw new Error('Cancelled');
@@ -602,6 +625,7 @@ async function advanceToNextSubject(job) {
           deletes: plan.deletes.map((d) => d.label),
           creates: plan.needsCreation.map((c) => c.label),
         });
+        paused = true;
         return;
       } catch (e) {
         // A dropped Puppeteer connection (see isConnectionLostError's own
@@ -629,7 +653,9 @@ async function advanceToNextSubject(job) {
     job.sectionResults.push({ gradeSectionLabel: job.gradeSectionLabel, results: job.subjectResults });
   });
 
-  await advanceToNextSection(job);
+  if (!paused) {
+    await advanceToNextSection(job);
+  }
 }
 
 // Shared by the manual Apply button (applySubjectDecision, below) and the
