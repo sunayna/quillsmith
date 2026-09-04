@@ -136,9 +136,10 @@ function handleStatus(status, data) {
     show('log', 'reference');
   } else if (status === 'awaiting-subject-decision') {
     show('log');
-    document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName}`;
+    document.getElementById('tree-subject-heading').textContent = `Review: ${data.subjectName} (${data.gradeSectionLabel})`;
+    const sectionsNote = data.sectionsRemaining ? ` ${data.sectionsRemaining} more section(s) queued after that.` : '';
     document.getElementById('tree-subject-meta').textContent =
-      `${data.remaining} subject(s) remaining after this one.`;
+      `${data.remaining} subject(s) remaining in ${data.gradeSectionLabel}.${sectionsNote}`;
     const unchanged = data.unchanged || [];
     document.getElementById('tree-subject-plan').innerHTML = `
       ${unchanged.length ? `<p>${unchanged.length} topic(s) already match, left untouched:</p>${renderPlanList(unchanged)}` : ''}
@@ -148,7 +149,7 @@ function handleStatus(status, data) {
     `;
     const dialog = document.getElementById('tree-subject-section');
     if (!dialog.open) dialog.showModal();
-    notifyDecisionNeeded(data.subjectName);
+    notifyDecisionNeeded(`${data.subjectName} (${data.gradeSectionLabel})`);
   } else if (status === 'done') {
     document.getElementById('stop-btn').disabled = true;
     document.getElementById('done-heading').textContent = 'Done';
@@ -210,12 +211,21 @@ function renderPlanList(labels) {
 
 function renderTreeDone(data) {
   const failuresEl = document.getElementById('done-failures');
-  const results = data.results || [];
-  if (results.length) {
-    failuresEl.innerHTML = `<ul class="file-list">${results.map((r) =>
-      `<li>${escapeHtml(r.subject)}: ${escapeHtml(r.outcome)}</li>`).join('')}</ul>`;
+  // sectionResults is one entry per Grade & Section that was queued (see
+  // advanceToNextSection) -- each carries its own subject-level results, so
+  // a multi-section run (e.g. "VII A, VII B") shows a heading per section
+  // instead of one flat list that doesn't say which section a subject
+  // belongs to. A single-section run still uses this same shape, just with
+  // one entry.
+  const sectionResults = data.sectionResults || [];
+  if (sectionResults.length) {
+    failuresEl.innerHTML = sectionResults.map((s) => `
+      <p class="file-count">${escapeHtml(s.gradeSectionLabel)}</p>
+      <ul class="file-list">${(s.results || []).map((r) =>
+        `<li>${escapeHtml(r.subject)}: ${escapeHtml(r.outcome)}</li>`).join('') || '<li>No subjects were processed.</li>'}</ul>
+    `).join('');
   } else {
-    failuresEl.innerHTML = '<p>No subjects were processed.</p>';
+    failuresEl.innerHTML = '<p>No sections were processed.</p>';
   }
   document.getElementById('done-outpath').innerHTML = '';
   document.getElementById('done-merge-row').classList.add('hidden');

@@ -284,20 +284,38 @@ async function runFilterStage(job) {
 // the CLI (apply_tree.js) does, since silently rewriting a shared tree with
 // no per-change review is a much bigger blast radius than writing a CSV.
 
+const VALID_TREE_GRADES = ['IV', 'V', 'VI', 'VII'];
+
+// job.gradeSectionInput is comma/newline separated -- "VII A", "VII A, VII
+// B", "VII A, VII B, VII C" all parse the same way, one Grade+Section token
+// at a time, so mixing grades in one run (e.g. "VII A, VI B") works too:
+// each entry carries its own grade, which is all the per-grade xlsx parsing
+// below needs to know.
+function parseGradeSectionList(input) {
+  const entries = (input || '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean).map((raw) => {
+    const [grade, ...sectionParts] = raw.split(/\s+/);
+    const section = sectionParts.join(' ');
+    if (!grade || !section || !VALID_TREE_GRADES.includes(grade.toUpperCase())) {
+      throw new Error(`"${raw}" isn't a valid Grade & Section — expected e.g. "VII A" with grade one of ${VALID_TREE_GRADES.join(', ')}`);
+    }
+    return { grade, section, gradeSectionLabel: `${grade} ${section}` };
+  });
+  if (entries.length === 0) {
+    throw new Error('At least one Grade & Section is required (e.g. "VII A", or "VII A, VII B" for more than one).');
+  }
+  return entries;
+}
+
 async function runTreePipeline(job) {
   try {
-    const [grade, ...sectionParts] = job.gradeSection.trim().split(/\s+/);
-    const section = sectionParts.join(' ');
-    const VALID_GRADES = ['IV', 'V', 'VI', 'VII'];
-    if (!grade || !section || !VALID_GRADES.includes(grade.toUpperCase())) {
-      throw new Error(`"${job.gradeSection}" isn't a valid Grade & Section — expected e.g. "VII A" with grade one of ${VALID_GRADES.join(', ')}`);
-    }
-    job.grade = grade;
-    job.gradeSectionLabel = `${grade} ${section}`;
+    const entries = parseGradeSectionList(job.gradeSectionInput);
 
     await withCapturedConsole(job, async () => {
       if (job.forceRebuild) {
         job.log('Force apply is ON: every topic will be deleted and recreated from the xlsx, even ones that already look unchanged.');
+      }
+      if (entries.length > 1) {
+        job.log(`Queued ${entries.length} sections: ${entries.map((e) => e.gradeSectionLabel).join(', ')}`);
       }
       job.log('Connecting to reportbee...');
       const page = await connectToReportbeeTab();
@@ -308,36 +326,28 @@ async function runTreePipeline(job) {
       await page.reload({ waitUntil: 'networkidle2' });
       await delay(2000);
       await switchYear(page, job.year);
-      await switchGradeSection(page, grade, section, job.planType);
 
-      const { baseUrl, planId } = getPageContext(page);
-      job.baseUrl = baseUrl;
-      job.planId = planId;
-      job.csrfToken = await getCsrfToken(page);
-
-      let termDomLabel = await findFullLabel(page, job.term);
-      if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, job.term); }
-      if (termDomLabel) {
-        const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
-        // access_token/profile_id are session-level, not node-specific (see
-        // sampleAuthParams's own comment) -- cached here so every subject
-        // below reuses this instead of re-sampling from ITS OWN node. That
-        // per-subject re-sampling used to be the only source, which broke
-        // for SEL: its subject-level node ("Socio-Emotional Learning") is a
-        // plain organizational node with no "Enter / View Marks" option at
-        // all (only the linked-ReportPlan wrapper beneath it has that) --
-        // confirmed live, 2026-08-21. The Term node always has it, so
-        // sampling here once and reusing sidesteps that per-subject gap
-        // entirely rather than special-casing SEL's node again.
-        job.accessToken = accessToken;
-        job.profileId = profileId;
-        await treeLib.ensureYearRootLabel(page, { baseUrl, planId, csrfToken: job.csrfToken, accessToken, profileId }, job.year);
-      } else {
-        job.log(`Could not find Term "${job.term}" to check the year root label — skipping that check.`);
+      // Parse the xlsx once per distinct Grade in the queue, up front --
+      // multiple sections of the same grade (e.g. "VII A, VII B") share one
+      // parse instead of re-reading the workbook per section, and the
+      // upload gets deleted right after this, so every grade the run will
+      // ever touch has to be read here rather than lazily per-section.
+      job.targetByGrade = {};
+      for (const grade of [...new Set(entries.map((e) => e.grade))]) {
+        job.log(`Parsing tree workbook for Grade ${grade}...`);
+        const target = treeLib.parseTreeXlsx(job.treeXlsxPath, grade, job.subjectFilter || undefined);
+        const subjects = Object.keys(target).filter((name) => {
+          if (treeLib.SKIP_SUBJECTS.includes(name.toLowerCase())) {
+            job.log(`=== ${name} (Grade ${grade}) === Skipped (known limitation — see SKIP_SUBJECTS in apply_tree.js).`);
+            return false;
+          }
+          return true;
+        });
+        if (subjects.length === 0) {
+          throw new Error(`No matching subject(s) found in the tree xlsx for Grade ${grade}.`);
+        }
+        job.targetByGrade[grade] = { target, subjects };
       }
-
-      job.log('Parsing tree workbook...');
-      const target = treeLib.parseTreeXlsx(job.treeXlsxPath, grade, job.subjectFilter || undefined);
       if (job.applyWorkEthicsWeight) {
         job.targetWorkEthicsWeight = treeLib.readWorkEthicsWeight(job.treeXlsxPath);
         if (job.targetWorkEthicsWeight != null) {
@@ -347,26 +357,95 @@ async function runTreePipeline(job) {
         }
       }
       fs.unlink(job.treeXlsxPath, () => {});
-      const subjects = Object.keys(target).filter((name) => {
-        if (treeLib.SKIP_SUBJECTS.includes(name.toLowerCase())) {
-          job.log(`=== ${name} === Skipped (known limitation — see SKIP_SUBJECTS in apply_tree.js).`);
-          return false;
-        }
-        return true;
-      });
-      if (subjects.length === 0) {
-        throw new Error('No matching subject(s) found in the tree xlsx for this grade.');
-      }
 
-      job.target = target;
-      job.subjectQueue = subjects;
-      job.subjectResults = [];
+      job.sectionQueue = entries;
+      job.sectionResults = [];
     });
 
-    await advanceToNextSubject(job);
+    await advanceToNextSection(job);
   } catch (e) {
     reportFailure(job, e);
   }
+}
+
+// Pops the next queued Grade & Section, switches the live tab to it, and
+// kicks off that section's own subject loop (advanceToNextSubject) -- once
+// that loop empties this section's subjectQueue, it comes back here for the
+// next one. Finishes the whole job once the section queue itself is empty.
+async function advanceToNextSection(job) {
+  await withCapturedConsole(job, async () => {
+    if (job.sectionQueue.length === 0) {
+      job.log('All sections processed.');
+      // saveStructureTwoPhase saves via raw fetch() calls inside the page,
+      // not real UI navigation -- the API call succeeds but the tree UI
+      // itself never re-renders, so the tab keeps showing pre-run state
+      // until reloaded. Reloaded once here, at the very end of the whole
+      // run across every queued section (not per-section/per-subject --
+      // confirmed preference, since a reload per subject means
+      // re-navigating afterward too, adding real time for a payoff only
+      // useful at the very end anyway). Best-effort: a reload failure
+      // (e.g. the tab got closed) shouldn't stop the run from being
+      // correctly reported as done -- the changes are already saved
+      // regardless of whether this tab refresh succeeds.
+      try {
+        await job.page.reload({ waitUntil: 'networkidle2', timeout: 15000 });
+        job.log('Reloaded the reportbee tab so the tree reflects the changes just applied.');
+      } catch (e) {
+        job.log(`Could not reload the reportbee tab automatically (${e.message}) -- refresh it manually to see the changes.`);
+      }
+      job.setStatus('done', { sectionResults: job.sectionResults });
+      return;
+    }
+
+    if (job.cancelled) throw new Error('Cancelled');
+    const { grade, section, gradeSectionLabel } = job.sectionQueue.shift();
+    job.grade = grade;
+    job.gradeSectionLabel = gradeSectionLabel;
+    job.log(`── ${gradeSectionLabel} ──`);
+
+    const page = job.page;
+    await switchGradeSection(page, grade, section, job.planType);
+
+    const { baseUrl, planId } = getPageContext(page);
+    job.baseUrl = baseUrl;
+    job.planId = planId;
+    job.csrfToken = await getCsrfToken(page);
+
+    // Term-level access token: re-sampled for every section switched to
+    // (switchGradeSection navigates the page, which invalidates whatever
+    // was sampled for the PREVIOUS section) -- still cached and reused
+    // across every subject WITHIN this one section, same as before.
+    job.accessToken = null;
+    job.profileId = null;
+    let termDomLabel = await findFullLabel(page, job.term);
+    if (!termDomLabel) { await delay(2000); termDomLabel = await findFullLabel(page, job.term); }
+    if (termDomLabel) {
+      const { accessToken, profileId } = await sampleAuthParams(page, termDomLabel);
+      // access_token/profile_id are session-level, not node-specific (see
+      // sampleAuthParams's own comment) -- cached here so every subject
+      // below reuses this instead of re-sampling from ITS OWN node. That
+      // per-subject re-sampling used to be the only source, which broke
+      // for SEL: its subject-level node ("Socio-Emotional Learning") is a
+      // plain organizational node with no "Enter / View Marks" option at
+      // all (only the linked-ReportPlan wrapper beneath it has that) --
+      // confirmed live, 2026-08-21. The Term node always has it, so
+      // sampling here once per section and reusing sidesteps that
+      // per-subject gap entirely rather than special-casing SEL's node
+      // again.
+      job.accessToken = accessToken;
+      job.profileId = profileId;
+      await treeLib.ensureYearRootLabel(page, { baseUrl, planId, csrfToken: job.csrfToken, accessToken, profileId }, job.year);
+    } else {
+      job.log(`Could not find Term "${job.term}" to check the year root label — skipping that check.`);
+    }
+
+    const { target, subjects } = job.targetByGrade[grade];
+    job.target = target;
+    job.subjectQueue = [...subjects];
+    job.subjectResults = [];
+  });
+
+  await advanceToNextSubject(job);
 }
 
 async function advanceToNextSubject(job) {
@@ -463,7 +542,9 @@ async function advanceToNextSubject(job) {
       job.pendingSubject = { subjectName, ctx, plan };
       job.setStatus('awaiting-subject-decision', {
         subjectName,
+        gradeSectionLabel: job.gradeSectionLabel,
         remaining: job.subjectQueue.length,
+        sectionsRemaining: job.sectionQueue.length,
         unchanged: plan.unchanged,
         updates: updateList.map((u) => u._label),
         deletes: plan.deletes.map((d) => d.label),
@@ -472,26 +553,11 @@ async function advanceToNextSubject(job) {
       return;
     }
 
-    job.log('All subjects processed.');
-    // saveStructureTwoPhase saves via raw fetch() calls inside the page,
-    // not real UI navigation -- the API call succeeds but the tree UI
-    // itself never re-renders, so the tab keeps showing pre-run state
-    // until reloaded. Reloaded once here, at the very end of the whole
-    // run (not per-subject -- confirmed preference, since a reload per
-    // subject means re-navigating afterward too, adding real time to
-    // every subject for a payoff only useful at the very end anyway).
-    // Best-effort: a reload failure (e.g. the tab got closed, or the user
-    // is mid-edit and network-idle never resolves) shouldn't stop the run
-    // from being correctly reported as done -- the changes are already
-    // saved regardless of whether this tab refresh succeeds.
-    try {
-      await job.page.reload({ waitUntil: 'networkidle2', timeout: 15000 });
-      job.log('Reloaded the reportbee tab so the tree reflects the changes just applied.');
-    } catch (e) {
-      job.log(`Could not reload the reportbee tab automatically (${e.message}) -- refresh it manually to see the changes.`);
-    }
-    job.setStatus('done', { results: job.subjectResults });
+    job.log(`All subjects processed for ${job.gradeSectionLabel}.`);
+    job.sectionResults.push({ gradeSectionLabel: job.gradeSectionLabel, results: job.subjectResults });
   });
+
+  await advanceToNextSection(job);
 }
 
 // Shared by the manual Apply button (applySubjectDecision, below) and the
@@ -846,7 +912,7 @@ app.post('/api/tree/run', upload.single('treeFile'), (req, res) => {
   }
   const job = createJob();
   job.kind = 'tree';
-  job.gradeSection = gradeSection;
+  job.gradeSectionInput = gradeSection;
   job.term = term;
   job.year = year;
   job.planType = planType || 'Academic';

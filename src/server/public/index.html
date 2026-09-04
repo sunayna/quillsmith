@@ -75,10 +75,10 @@
 
   <section id="tree-form-section" class="card hidden">
     <h2>Apply a tree workbook</h2>
-    <p class="subtitle">Parses a filled-in "ASSESSMENT TREES" workbook and writes the Topic/Standard/Assessment structure into reportbee's live Build Structure tree for a grade/section. This deletes and recreates existing nodes for each subject you apply — by default you'll review every subject's plan before anything is saved, unless you check "Apply all subjects automatically" below.</p>
+    <p class="subtitle">Parses a filled-in "ASSESSMENT TREES" workbook and writes the Topic/Standard/Assessment structure into reportbee's live Build Structure tree for one or more grade/sections, run one after another. This deletes and recreates existing nodes for each subject you apply — by default you'll review every subject's plan before anything is saved, unless you check "Apply all subjects automatically" below.</p>
     <div class="field-row">
-      <label>Grade &amp; Section
-        <input id="tree-gradesection" type="text" placeholder="e.g. VII A">
+      <label>Grade &amp; Section(s)
+        <input id="tree-gradesection" type="text" placeholder="e.g. VII A, or VII A, VII B, VII C" title="One or more, comma-separated. Sections run one after another in the same job.">
       </label>
       <label>Term
         <input id="tree-term" type="text" placeholder="e.g. Term 1">
